@@ -925,12 +925,12 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // Stylized models from Meta's asset library (downloaded into
     // public/gltf/market/). environment.ts places them with auto-scaling.
     treeModel: {
-      url: "/gltf/market/stylized-tree.glb",
+      url: "./gltf/market/stylized-tree.glb",
       type: AssetType.GLTF,
       priority: "critical",
     },
     windmillModel: {
-      url: "/gltf/market/windmill.glb",
+      url: "./gltf/market/windmill.glb",
       type: AssetType.GLTF,
       priority: "critical",
     },
