@@ -1,0 +1,205 @@
+<!--
+  Welcome + Tutorial panel for "Market Harvest".
+
+  This is the VERY FIRST thing a student sees. It introduces the premise and
+  walks them through how to play (planting, moving, talking to Samuel, and
+  reading the score meters) BEFORE the farm setup props appear.
+
+  Like the other panels, this file is automatically compiled to
+  public/ui/welcome.json by the @iwsdk/vite-plugin-uikitml plugin
+  (see vite.config.ts) and referenced from index.ts via PanelUI
+  (config: "./ui/welcome.json").
+
+  HOW THE CODE TALKS TO THIS FILE:
+    Every element index.ts needs is given an `id`. The tutorial is a series of
+    "steps" laid out as stacked containers (step-1 ... step-5); index.ts shows
+    one at a time by flipping each container's `display` between "flex" and
+    "none". The Back / Next buttons advance or rewind the step, and on the
+    final step Next becomes "Start Farming" and reveals the 3D farm setup.
+
+  Colors used:
+    #fffbf0  warm white -> panel background
+    #fdf3dd  light      -> step card background
+    #1F3A5F  navy       -> headings / body text / active button labels
+    #c8962a  gold       -> accents + active Next button
+    #5fae4a  green      -> step title accent
+    #c9c2b5  gray       -> disabled button background
+    #7a7a7a  muted      -> disabled button label
+-->
+<style>
+  /* The warm card that holds everything, with a navy border. */
+  .panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 5;
+    width: 128;
+    background-color: #fffbf0;
+    border-width: 1.5;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 6;
+  }
+
+  .eyebrow {
+    font-size: 3;
+    font-weight: bold;
+    color: #8a6118; /* readable dark gold */
+    text-align: center;
+    letter-spacing: 2;
+  }
+
+  .heading {
+    font-size: 7;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    margin-top: 1;
+  }
+
+  /* The body area that swaps between tutorial steps. */
+  .step-area {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 116;
+    margin-top: 3;
+  }
+
+  /* One tutorial step. index.ts shows exactly one at a time. */
+  .step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 116;
+    padding: 5;
+    background-color: #fdf3dd; /* light cream */
+    border-width: 1.5;
+    border-color: #c8962a; /* gold */
+    border-radius: 5;
+  }
+
+  .step-title {
+    font-size: 5.2;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+  }
+
+  .step-body {
+    font-size: 4;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    margin-top: 2.5;
+  }
+
+  /* "Step 2 of 5" progress label under the steps. The fixed width keeps the
+     short label on ONE line no matter how tall the step card above it is. */
+  .step-indicator {
+    font-size: 3.2;
+    font-weight: bold;
+    color: #5f5f5f; /* readable muted gray */
+    text-align: center;
+    width: 40;
+    margin-top: 3;
+  }
+
+  /* Row holding the Back + Next buttons. */
+  .button-row {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    margin-top: 3;
+  }
+
+  /* The Back button. Starts grayed-out (disabled) on step 1. */
+  .back-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 2;
+    margin-right: 2;
+    padding-top: 3;
+    padding-bottom: 3;
+    padding-left: 7;
+    padding-right: 7;
+    background-color: #c9c2b5; /* gray = disabled by default */
+    border-radius: 4;
+    cursor: pointer;
+  }
+
+  .back-label {
+    font-size: 4;
+    font-weight: bold;
+    color: #7a7a7a; /* muted = disabled by default */
+  }
+
+  /* The Next / Start button. Gold + navy (active by default). */
+  .next-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 2;
+    margin-right: 2;
+    padding-top: 3;
+    padding-bottom: 3;
+    padding-left: 7;
+    padding-right: 7;
+    background-color: #c8962a; /* gold */
+    border-radius: 4;
+    cursor: pointer;
+  }
+
+  .next-label {
+    font-size: 4;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+  }
+</style>
+
+<div class="panel">
+  <span class="eyebrow">HOW TO PLAY</span>
+  <span class="heading">Market Harvest</span>
+
+  <div class="step-area">
+    <!-- Step 1 — the premise -->
+    <div id="step-1" class="step">
+      <span class="step-title">Welcome to Old Virginia!</span>
+      <span class="step-body">You're a farmer in early Virginia! Over 3 seasons you'll plant crops, watch prices rise and fall, and grow your farm. This quick tour shows you how.</span>
+    </div>
+
+    <!-- Step 2 — planting -->
+    <div id="step-2" class="step">
+      <span class="step-title">1. Plant Your Crops</span>
+      <span class="step-body">Click a crop on the board to plant it in the next plot. (In a headset: point and pull the trigger.) Fill every plot to unlock Begin Season 1!</span>
+    </div>
+
+    <!-- Step 3 — moving around -->
+    <div id="step-3" class="step">
+      <span class="step-title">2. Explore the Farm</span>
+      <span class="step-body">Walk with W A S D or the arrow keys. Hold the RIGHT mouse button and drag to look around. (Headset: use the thumbstick.) Find the crop board, your field, and Samuel's stall down the path!</span>
+    </div>
+
+    <!-- Step 4 — Samuel / the market -->
+    <div id="step-4" class="step">
+      <span class="step-title">3. Visit Samuel</span>
+      <span class="step-body">Samuel runs the market stall. When a gold ! pops up, walk over! The choice board stays locked until you hear his news and answer his question.</span>
+    </div>
+
+    <!-- Step 5 — the score meters -->
+    <div id="step-5" class="step">
+      <span class="step-title">4. Watch Your Meters</span>
+      <span class="step-body">The meters track your Farm Coins, Crop Health, and Market Smarts. Every choice moves them. Keep all three high to earn the best rank!</span>
+    </div>
+  </div>
+
+  <span id="step-indicator" class="step-indicator">Step 1 of 5</span>
+
+  <div class="button-row">
+    <div id="back-button" class="back-button">
+      <span id="back-label" class="back-label">Back</span>
+    </div>
+    <div id="next-button" class="next-button">
+      <span id="next-label" class="next-label">Next</span>
+    </div>
+  </div>
+</div>

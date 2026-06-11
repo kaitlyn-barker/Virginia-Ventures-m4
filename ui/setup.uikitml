@@ -1,0 +1,175 @@
+<!--
+  Crop Selection / Setup panel for "Market Harvest: Virginia's Agricultural Economy".
+
+  This is the FIRST screen students see. It lets them choose which crops to plant
+  before Season 1 begins.
+
+  Like title.uikitml, this file is automatically compiled to public/ui/setup.json
+  by the @iwsdk/vite-plugin-uikitml plugin (see vite.config.ts). The compiled JSON
+  is referenced from index.ts via the PanelUI component (config: "./ui/setup.json").
+
+  HOW THE CODE TALKS TO THIS FILE:
+    Every element we need to read or change from index.ts is given an `id`.
+    In index.ts we look elements up with document.getElementById("...") and then
+    call element.setProperties({ ... }) to (a) fill in text from the CONSTANTS
+    object, (b) change a card's border color when it is selected, and (c) react
+    to taps via the onClick handler.
+
+  Colors used:
+    #f3e9d2  cream  -> panel background
+    #1F3A5F  navy   -> headings / default borders / text
+    #c8962a  gold   -> SELECTED card border + active "Begin" button
+    #fbf4e3  light  -> individual crop card background
+
+  NOTE: The text inside the cards (crop name, description, price, risk) is just a
+  placeholder here. index.ts overwrites it at runtime using the CONSTANTS object,
+  so CONSTANTS stays the single source of truth for prices and risk levels.
+-->
+<style>
+  /* The cream card that holds everything, with a navy border. */
+  .panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 4;
+    width: 132;
+    background-color: #f3e9d2; /* cream */
+    border-width: 1;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 4;
+  }
+
+  .heading {
+    font-size: 7;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+  }
+
+  .instruction {
+    font-size: 3.2;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    margin-top: 2;
+  }
+
+  /* Wrapper around the 2x2 grid of crop cards. */
+  .grid {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-top: 3;
+  }
+
+  /* One horizontal row holding two cards. Two rows = a 2x2 grid. */
+  .row {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+  }
+
+  /* A single crop card. Its border-color is swapped to gold when selected. */
+  .card {
+    display: flex;
+    flex-direction: column;
+    width: 58;
+    padding: 3.5;
+    margin-left: 1.5;
+    margin-right: 1.5;
+    margin-top: 1.5;
+    background-color: #fbf4e3; /* light cream */
+    border-width: 1.2;
+    border-color: #1F3A5F; /* navy = the DEFAULT (unselected) border */
+    border-radius: 3;
+    cursor: pointer;
+  }
+
+  .card-name {
+    font-size: 4.2;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+  }
+
+  .card-desc {
+    font-size: 2.7;
+    color: #4a4a4a; /* dark gray */
+    margin-top: 1.5;
+  }
+
+  .card-price {
+    font-size: 2.7;
+    color: #1F3A5F; /* navy */
+    margin-top: 1.5;
+  }
+
+  .card-risk {
+    font-size: 2.7;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    margin-top: 1;
+  }
+
+  /* The "Begin Season 1" button. Starts grayed-out (disabled look). */
+  .begin-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 4;
+    padding-top: 2.5;
+    padding-bottom: 2.5;
+    padding-left: 6;
+    padding-right: 6;
+    background-color: #c9c2b5; /* gray = disabled by default */
+    border-radius: 3;
+    cursor: pointer;
+  }
+
+  .begin-label {
+    font-size: 4;
+    font-weight: bold;
+    color: #7a7a7a; /* muted gray = disabled by default */
+  }
+</style>
+
+<div class="panel">
+  <span class="heading">Plan Your Farm</span>
+  <span class="instruction">Tap the crops you want to grow this season. Choose wisely - each crop has different risks and rewards.</span>
+
+  <div class="grid">
+    <!-- Row 1: Tobacco + Wheat -->
+    <div class="row">
+      <div id="card-tobacco" class="card">
+        <span id="name-tobacco" class="card-name">Tobacco</span>
+        <span id="desc-tobacco" class="card-desc">...</span>
+        <span id="price-tobacco" class="card-price">Base price: ... coins/unit</span>
+        <span id="risk-tobacco" class="card-risk">Risk: ...</span>
+      </div>
+      <div id="card-wheat" class="card">
+        <span id="name-wheat" class="card-name">Wheat</span>
+        <span id="desc-wheat" class="card-desc">...</span>
+        <span id="price-wheat" class="card-price">Base price: ... coins/unit</span>
+        <span id="risk-wheat" class="card-risk">Risk: ...</span>
+      </div>
+    </div>
+
+    <!-- Row 2: Corn + Cotton -->
+    <div class="row">
+      <div id="card-corn" class="card">
+        <span id="name-corn" class="card-name">Corn</span>
+        <span id="desc-corn" class="card-desc">...</span>
+        <span id="price-corn" class="card-price">Base price: ... coins/unit</span>
+        <span id="risk-corn" class="card-risk">Risk: ...</span>
+      </div>
+      <div id="card-cotton" class="card">
+        <span id="name-cotton" class="card-name">Cotton</span>
+        <span id="desc-cotton" class="card-desc">...</span>
+        <span id="price-cotton" class="card-price">Base price: ... coins/unit</span>
+        <span id="risk-cotton" class="card-risk">Risk: ...</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="begin-button" class="begin-button">
+    <span id="begin-label" class="begin-label">Begin Season 1</span>
+  </div>
+</div>

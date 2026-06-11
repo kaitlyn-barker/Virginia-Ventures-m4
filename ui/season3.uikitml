@@ -1,0 +1,250 @@
+<!--
+  Season 3 panel for "Market Harvest: Virginia's Agricultural Economy".
+
+  This is the FINAL COMPETITIVE CHALLENGE screen — the last season before the
+  market report. Samuel returns with one more piece of market news, prices shift
+  a final time, and the student makes their last strategy decision before the
+  year's harvest is tallied.
+
+  Like the other panels, this file is automatically compiled to
+  public/ui/season3.json by the @iwsdk/vite-plugin-uikitml plugin (see
+  vite.config.ts). index.ts references the compiled JSON through a PanelUI
+  component (config: "./ui/season3.json").
+
+  THE SCREEN HAS TWO "BEATS" (mini-steps):
+    Beat 1 — Samuel's News:    the NPC delivers the new event + a stat card.
+    Beat 2 — Final Decision:   choose Expand Production / Protect Your Land,
+                               then see the harvest summary.
+
+  Each beat lives in its own <div> (id "s3-beat1" / "s3-beat2"). index.ts shows
+  exactly ONE beat at a time by flipping each beat's `display` between "flex"
+  (visible) and "none" (hidden).
+
+  HOW THE CODE TALKS TO THIS FILE:
+    Every element index.ts needs to read or change has an `id`. In index.ts we
+    look elements up with document.getElementById("...") and call
+    element.setProperties({ ... }) to fill in text, change visibility, or react
+    to taps via onClick.
+
+  Because the actual event (new competition / new trade route) is decided at
+  runtime, the dialogue + stat card start as placeholders and are filled in by
+  index.ts once the event is rolled.
+
+  Colors used:
+    #f3e9d2  cream  -> panel background
+    #1F3A5F  navy   -> headings / borders / text
+    #c8962a  gold   -> action buttons
+    #fbf4e3  light  -> card backgrounds
+    #a33b2a  rust   -> NPC name label accent
+-->
+<style>
+  /* The cream card that holds the whole screen, with a navy border. */
+  .panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 4;
+    width: 150;
+    background-color: #f3e9d2; /* cream */
+    border-width: 1;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 4;
+  }
+
+  /* A "beat" wrapper. index.ts toggles display flex/none to switch beats. */
+  .beat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 142;
+  }
+
+  .heading {
+    font-size: 7;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+  }
+
+  .subtext {
+    font-size: 3.2;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    margin-top: 2;
+  }
+
+  /* ----- Beat 1: Samuel's news ----- */
+
+  /* The NPC's name shown above the dialogue bubble. */
+  .npc-name {
+    font-size: 4.5;
+    font-weight: bold;
+    color: #a33b2a; /* rust */
+    text-align: left;
+    width: 130;
+    margin-top: 2;
+  }
+
+  /* The dialogue bubble that holds Samuel's spoken line. */
+  .dialogue {
+    display: flex;
+    flex-direction: column;
+    width: 130;
+    padding: 3;
+    margin-top: 1.5;
+    background-color: #fbf4e3; /* light cream */
+    border-width: 1;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 3;
+  }
+
+  .dialogue-line {
+    font-size: 3.6;
+    color: #1F3A5F; /* navy */
+    text-align: left;
+  }
+
+  /* The stat card under Samuel's line summarizing the price effect. */
+  .report-card {
+    display: flex;
+    flex-direction: column;
+    width: 130;
+    padding: 3;
+    margin-top: 3;
+    background-color: #fbf4e3; /* light cream */
+    border-width: 1.2;
+    border-color: #c8962a; /* gold */
+    border-radius: 3;
+  }
+
+  .report-title {
+    font-size: 3.4;
+    font-weight: bold;
+    color: #c8962a; /* gold */
+    text-align: left;
+  }
+
+  .report-event {
+    font-size: 4.5;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    margin-top: 1.5;
+  }
+
+  .report-change {
+    font-size: 3.6;
+    font-weight: bold;
+    color: #a33b2a; /* rust */
+    margin-top: 1.5;
+  }
+
+  /* ----- Beat 2: final decision ----- */
+
+  /* Read-only lines describing the student's portfolio + the updated prices. */
+  .portfolio {
+    font-size: 3.4;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    width: 130;
+    margin-top: 2;
+  }
+
+  /* Wrapper around the row of choice buttons. */
+  .options {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 142;
+    margin-top: 3;
+  }
+
+  /* The harvest summary area shown after a choice is made (hidden at first). */
+  .summary {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 142;
+    margin-top: 3;
+  }
+
+  .summary-line {
+    font-size: 3.8;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    width: 130;
+  }
+
+  /* ----- Shared action buttons ----- */
+
+  .button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 3;
+    margin-left: 2;
+    margin-right: 2;
+    padding-top: 2.5;
+    padding-bottom: 2.5;
+    padding-left: 6;
+    padding-right: 6;
+    background-color: #c8962a; /* gold */
+    border-radius: 3;
+    cursor: pointer;
+  }
+
+  .button-label {
+    font-size: 4;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+  }
+</style>
+
+<div class="panel">
+  <!-- ====================================================================
+       BEAT 1 — SAMUEL DELIVERS NEW COMPETITION NEWS
+       ==================================================================== -->
+  <div id="s3-beat1" class="beat">
+    <span class="heading">Season 3: The Final Challenge</span>
+
+    <!-- NPC name label sits above Samuel's dialogue bubble. -->
+    <span id="s3-npc-name" class="npc-name">Samuel</span>
+    <div class="dialogue">
+      <span id="s3-samuel-line" class="dialogue-line">...</span>
+    </div>
+
+    <!-- The stat card summarizing the price effect. index.ts fills the event
+         name and the plain-language price change once the event is rolled. -->
+    <div class="report-card">
+      <span class="report-title">MARKET REPORT</span>
+      <span id="s3-report-event" class="report-event">...</span>
+      <span id="s3-report-change" class="report-change">...</span>
+    </div>
+
+    <div id="s3-decision-button" class="button"><span class="button-label">Make Your Final Decision</span></div>
+  </div>
+
+  <!-- ====================================================================
+       BEAT 2 — FINAL STRATEGY DECISION
+       ==================================================================== -->
+  <div id="s3-beat2" class="beat">
+    <span id="s3-heading" class="heading">Final Season: Your Last Move</span>
+
+    <!-- The student's current portfolio + the updated market prices. -->
+    <span id="s3-portfolio-text" class="portfolio">Your crops: ...</span>
+    <span id="s3-prices-text" class="portfolio">Current prices: ...</span>
+
+    <!-- The two final choices. index.ts hides this row once a choice is made. -->
+    <div id="s3-options-row" class="options">
+      <div id="s3-expand-button" class="button"><span class="button-label">Expand Production</span></div>
+      <div id="s3-protect-button" class="button"><span class="button-label">Protect Your Land</span></div>
+    </div>
+
+    <!-- Harvest summary + report button. Hidden until the student commits. -->
+    <div id="s3-summary-area" class="summary">
+      <span id="s3-summary-line" class="summary-line">...</span>
+      <div id="s3-report-button" class="button"><span class="button-label">See Your Market Report</span></div>
+    </div>
+  </div>
+</div>

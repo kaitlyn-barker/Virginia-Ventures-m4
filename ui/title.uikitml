@@ -1,0 +1,43 @@
+<!--
+  Title panel for "Market Harvest: Virginia's Agricultural Economy".
+
+  This .uikitml file is automatically compiled to public/ui/title.json by the
+  @iwsdk/vite-plugin-uikitml plugin (see vite.config.ts). The compiled JSON is
+  what we reference from index.ts via the PanelUI component (config: "./ui/title.json").
+
+  Colors used:
+    #f3e9d2  cream  -> panel background
+    #1F3A5F  navy   -> all text
+-->
+<style>
+  .panel-container {
+    /* Center everything and give the cream card some breathing room */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3;
+    width: 60;
+    background-color: #f3e9d2; /* cream */
+    border-radius: 3;
+  }
+
+  .title {
+    font-size: 4;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+  }
+
+  .subtitle {
+    font-size: 2.5;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    margin-top: 1.5;
+  }
+</style>
+
+<div class="panel-container">
+  <span class="title">Market Harvest: Virginia's Agricultural Economy</span>
+  <span class="subtitle">Loading...</span>
+</div>

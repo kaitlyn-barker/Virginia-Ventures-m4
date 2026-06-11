@@ -1,0 +1,337 @@
+<!--
+  Season 1 panel for "Market Harvest: Virginia's Agricultural Economy".
+
+  This is the PLANTING / TENDING / FIRST-HARVEST screen. It appears after the
+  student finishes the crop-selection setup screen.
+
+  Like setup.uikitml, this file is automatically compiled to
+  public/ui/season1.json by the @iwsdk/vite-plugin-uikitml plugin (see
+  vite.config.ts). index.ts references the compiled JSON through a PanelUI
+  component (config: "./ui/season1.json").
+
+  THE SCREEN HAS THREE "BEATS" (mini-steps):
+    Beat 1 — Planting:  choose how many plots of each crop to plant.
+    Beat 2 — Tending:   watch a 3-second progress bar fill up.
+    Beat 3 — Market:    see prices, then "Sell Now" or "Hold and Wait".
+
+  Each beat lives in its own <div> (id "beat1" / "beat2" / "beat3"). index.ts
+  shows exactly ONE beat at a time by flipping each beat's `display` between
+  "flex" (visible) and "none" (hidden).
+
+  HOW THE CODE TALKS TO THIS FILE:
+    Every element index.ts needs to read or change has an `id`. In index.ts we
+    look elements up with document.getElementById("...") and call
+    element.setProperties({ ... }) to fill in text, change sizes, or react to
+    taps via onClick.
+
+  Because the student may have selected anywhere from 1 to 4 crops, we lay out a
+  FIXED set of 4 plot rows and 4 price cards here, then index.ts shows only the
+  ones that match the selected crops and hides the rest.
+
+  Colors used:
+    #f3e9d2  cream  -> panel background
+    #1F3A5F  navy   -> headings / borders / text
+    #c8962a  gold   -> action buttons + progress fill
+    #fbf4e3  light  -> card backgrounds
+-->
+<style>
+  /* The cream card that holds the whole screen, with a navy border. */
+  .panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 4;
+    width: 150;
+    background-color: #f3e9d2; /* cream */
+    border-width: 1;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 4;
+  }
+
+  /* A "beat" wrapper. index.ts toggles display flex/none to switch beats. */
+  .beat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 142;
+  }
+
+  .heading {
+    font-size: 7;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+  }
+
+  .subtext {
+    font-size: 3.2;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    margin-top: 2;
+  }
+
+  /* ----- Beat 1: plot rows ----- */
+
+  /* Wrapper around the list of plot rows. */
+  .plots {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 120;
+    margin-top: 3;
+  }
+
+  /* One crop's row: name on the left, then  -  count  +  on the right. */
+  .plot-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 120;
+    padding: 2;
+    margin-top: 1.5;
+    background-color: #fbf4e3; /* light cream */
+    border-width: 1;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 2;
+  }
+
+  .plot-name {
+    font-size: 4;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    width: 50;
+  }
+
+  /* The square "+" and "-" buttons. */
+  .plot-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 10;
+    height: 10;
+    background-color: #c8962a; /* gold */
+    border-radius: 2;
+    cursor: pointer;
+  }
+
+  .plot-btn-label {
+    font-size: 6;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+  }
+
+  .plot-count {
+    font-size: 5;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    width: 14;
+    text-align: center;
+  }
+
+  .total {
+    font-size: 4.2;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    margin-top: 3;
+  }
+
+  .reminder {
+    font-size: 3;
+    color: #4a4a4a; /* dark gray */
+    text-align: center;
+    margin-top: 2.5;
+    width: 124;
+  }
+
+  /* ----- Beat 2: progress bar ----- */
+
+  /* The gray track the gold fill grows inside. */
+  .progress-track {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    width: 120;
+    height: 8;
+    margin-top: 5;
+    background-color: #c9c2b5; /* gray */
+    border-radius: 2;
+  }
+
+  /* The gold fill. index.ts animates its width from 0 up to 120. */
+  .progress-fill {
+    width: 0;
+    height: 8;
+    background-color: #c8962a; /* gold */
+    border-radius: 2;
+  }
+
+  /* ----- Beat 3: price cards ----- */
+
+  .price-cards {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 142;
+    margin-top: 3;
+  }
+
+  .price-card {
+    display: flex;
+    flex-direction: column;
+    width: 64;
+    padding: 3;
+    margin: 1.5;
+    background-color: #fbf4e3; /* light cream */
+    border-width: 1.2;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 3;
+  }
+
+  .price-name {
+    font-size: 4.2;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+  }
+
+  .price-base {
+    font-size: 2.7;
+    color: #4a4a4a; /* dark gray */
+    margin-top: 1.5;
+  }
+
+  .price-current {
+    font-size: 3.2;
+    font-weight: bold;
+    color: #c8962a; /* gold */
+    margin-top: 1;
+  }
+
+  /* ----- Shared action buttons (Tend / Market / Sell / Hold) ----- */
+
+  .row {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    margin-top: 4;
+  }
+
+  .button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 4;
+    margin-left: 2;
+    margin-right: 2;
+    padding-top: 2.5;
+    padding-bottom: 2.5;
+    padding-left: 6;
+    padding-right: 6;
+    background-color: #c8962a; /* gold */
+    border-radius: 3;
+    cursor: pointer;
+  }
+
+  .button-label {
+    font-size: 4;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+  }
+</style>
+
+<div class="panel">
+  <!-- ====================================================================
+       BEAT 1 — PLANTING
+       ==================================================================== -->
+  <div id="beat1" class="beat">
+    <span class="heading">Season 1: Planting Time</span>
+
+    <!-- Up to 4 plot rows. index.ts fills + shows only the selected crops. -->
+    <div class="plots">
+      <div id="plot-row-0" class="plot-row">
+        <span id="plot-name-0" class="plot-name">Crop</span>
+        <div id="plot-minus-0" class="plot-btn"><span class="plot-btn-label">-</span></div>
+        <span id="plot-count-0" class="plot-count">1</span>
+        <div id="plot-plus-0" class="plot-btn"><span class="plot-btn-label">+</span></div>
+      </div>
+      <div id="plot-row-1" class="plot-row">
+        <span id="plot-name-1" class="plot-name">Crop</span>
+        <div id="plot-minus-1" class="plot-btn"><span class="plot-btn-label">-</span></div>
+        <span id="plot-count-1" class="plot-count">1</span>
+        <div id="plot-plus-1" class="plot-btn"><span class="plot-btn-label">+</span></div>
+      </div>
+      <div id="plot-row-2" class="plot-row">
+        <span id="plot-name-2" class="plot-name">Crop</span>
+        <div id="plot-minus-2" class="plot-btn"><span class="plot-btn-label">-</span></div>
+        <span id="plot-count-2" class="plot-count">1</span>
+        <div id="plot-plus-2" class="plot-btn"><span class="plot-btn-label">+</span></div>
+      </div>
+      <div id="plot-row-3" class="plot-row">
+        <span id="plot-name-3" class="plot-name">Crop</span>
+        <div id="plot-minus-3" class="plot-btn"><span class="plot-btn-label">-</span></div>
+        <span id="plot-count-3" class="plot-count">1</span>
+        <div id="plot-plus-3" class="plot-btn"><span class="plot-btn-label">+</span></div>
+      </div>
+    </div>
+
+    <span id="total-text" class="total">Total plots: 0 / 12</span>
+    <span class="reminder">More plots of one crop means more yield - but also more risk if that crop's price drops.</span>
+
+    <div id="tend-button" class="button"><span class="button-label">Tend Your Crops</span></div>
+  </div>
+
+  <!-- ====================================================================
+       BEAT 2 — TENDING
+       ==================================================================== -->
+  <div id="beat2" class="beat">
+    <span class="heading">Tending Your Fields</span>
+    <span class="subtext">Your workers are tending the fields. The summer sun is strong this year.</span>
+
+    <!-- Progress bar: a gray track with a gold fill that grows over 3 seconds. -->
+    <div class="progress-track">
+      <div id="progress-fill" class="progress-fill"></div>
+    </div>
+
+    <!-- Hidden until the timer finishes, then index.ts shows it. -->
+    <div id="market-button" class="button"><span class="button-label">Check the Market</span></div>
+  </div>
+
+  <!-- ====================================================================
+       BEAT 3 — FIRST MARKET PRICES
+       ==================================================================== -->
+  <div id="beat3" class="beat">
+    <span class="heading">First Harvest: Market Prices</span>
+
+    <!-- Up to 4 price cards. index.ts fills + shows only the selected crops. -->
+    <div class="price-cards">
+      <div id="price-card-0" class="price-card">
+        <span id="price-name-0" class="price-name">Crop</span>
+        <span id="price-base-0" class="price-base">Base price: ...</span>
+        <span id="price-current-0" class="price-current">Current market price: ...</span>
+      </div>
+      <div id="price-card-1" class="price-card">
+        <span id="price-name-1" class="price-name">Crop</span>
+        <span id="price-base-1" class="price-base">Base price: ...</span>
+        <span id="price-current-1" class="price-current">Current market price: ...</span>
+      </div>
+      <div id="price-card-2" class="price-card">
+        <span id="price-name-2" class="price-name">Crop</span>
+        <span id="price-base-2" class="price-base">Base price: ...</span>
+        <span id="price-current-2" class="price-current">Current market price: ...</span>
+      </div>
+      <div id="price-card-3" class="price-card">
+        <span id="price-name-3" class="price-name">Crop</span>
+        <span id="price-base-3" class="price-base">Base price: ...</span>
+        <span id="price-current-3" class="price-current">Current market price: ...</span>
+      </div>
+    </div>
+
+    <span class="subtext">If everyone grows the same crop, prices drop. Diversifying protects you.</span>
+
+    <div class="row">
+      <div id="sell-button" class="button"><span class="button-label">Sell Now</span></div>
+      <div id="hold-button" class="button"><span class="button-label">Hold and Wait</span></div>
+    </div>
+  </div>
+</div>

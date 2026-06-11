@@ -1,0 +1,310 @@
+<!--
+  Season 2 panel for "Market Harvest: Virginia's Agricultural Economy".
+
+  This is the MARKET EVENT screen. A surprise event shakes up the colony's
+  economy, and the student must decide how to adapt. It appears after Season 1.
+
+  Like setup.uikitml and season1.uikitml, this file is automatically compiled
+  to public/ui/season2.json by the @iwsdk/vite-plugin-uikitml plugin (see
+  vite.config.ts). index.ts references the compiled JSON through a PanelUI
+  component (config: "./ui/season2.json").
+
+  THE SCREEN HAS TWO "BEATS" (mini-steps):
+    Beat 1 — Samuel's News:    the NPC delivers the market event + a report card.
+    Beat 2 — Student Response: choose Shift Crops / Double Down / Diversify.
+
+  Each beat lives in its own <div> (id "s2-beat1" / "s2-beat2"). index.ts shows
+  exactly ONE beat at a time by flipping each beat's `display` between "flex"
+  (visible) and "none" (hidden).
+
+  HOW THE CODE TALKS TO THIS FILE:
+    Every element index.ts needs to read or change has an `id`. In index.ts we
+    look elements up with document.getElementById("...") and call
+    element.setProperties({ ... }) to fill in text, change visibility, or react
+    to taps via onClick.
+
+  Because the actual event (drought / cotton surge / tobacco oversupply) is
+  decided at runtime, almost every text element here starts as a placeholder
+  and is filled in by index.ts once the event is known.
+
+  Colors used:
+    #f3e9d2  cream  -> panel background
+    #1F3A5F  navy   -> headings / borders / text
+    #c8962a  gold   -> action buttons
+    #fbf4e3  light  -> card backgrounds
+    #a33b2a  rust   -> NPC name label accent
+-->
+<style>
+  /* The cream card that holds the whole screen, with a navy border. */
+  .panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 4;
+    width: 150;
+    background-color: #f3e9d2; /* cream */
+    border-width: 1;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 4;
+  }
+
+  /* A "beat" wrapper. index.ts toggles display flex/none to switch beats. */
+  .beat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 142;
+  }
+
+  .heading {
+    font-size: 7;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+  }
+
+  .subtext {
+    font-size: 3.2;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    margin-top: 2;
+  }
+
+  /* ----- Beat 1: Samuel's news ----- */
+
+  /* The NPC's name shown above the dialogue bubble. */
+  .npc-name {
+    font-size: 4.5;
+    font-weight: bold;
+    color: #a33b2a; /* rust */
+    text-align: left;
+    width: 130;
+    margin-top: 2;
+  }
+
+  /* The dialogue bubble that holds Samuel's spoken line. */
+  .dialogue {
+    display: flex;
+    flex-direction: column;
+    width: 130;
+    padding: 3;
+    margin-top: 1.5;
+    background-color: #fbf4e3; /* light cream */
+    border-width: 1;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 3;
+  }
+
+  .dialogue-line {
+    font-size: 3.6;
+    color: #1F3A5F; /* navy */
+    text-align: left;
+  }
+
+  /* The "MARKET REPORT" stat card under Samuel's line. */
+  .report-card {
+    display: flex;
+    flex-direction: column;
+    width: 130;
+    padding: 3;
+    margin-top: 3;
+    background-color: #fbf4e3; /* light cream */
+    border-width: 1.2;
+    border-color: #c8962a; /* gold */
+    border-radius: 3;
+  }
+
+  .report-title {
+    font-size: 3.4;
+    font-weight: bold;
+    color: #c8962a; /* gold */
+    text-align: left;
+  }
+
+  .report-event {
+    font-size: 4.5;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    margin-top: 1.5;
+  }
+
+  .report-crop {
+    font-size: 3.4;
+    color: #4a4a4a; /* dark gray */
+    margin-top: 1;
+  }
+
+  .report-change {
+    font-size: 3.6;
+    font-weight: bold;
+    color: #a33b2a; /* rust */
+    margin-top: 1.5;
+  }
+
+  /* ----- Beat 2: student response ----- */
+
+  /* A read-only line describing the crops the student planted in Season 1. */
+  .portfolio {
+    font-size: 3.4;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    width: 130;
+    margin-top: 2;
+  }
+
+  /* Wrapper around a row of choice buttons. */
+  .options {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 142;
+    margin-top: 3;
+  }
+
+  /* The "tap a crop to shift to" picker (hidden until "Shift Crops" is tapped). */
+  .picker {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 142;
+    margin-top: 2;
+  }
+
+  .picker-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 142;
+    margin-top: 1.5;
+  }
+
+  /* The confirmation area shown after a choice is made (hidden at first). */
+  .confirm {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 142;
+    margin-top: 3;
+  }
+
+  .confirm-line {
+    font-size: 3.8;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+    text-align: center;
+    width: 130;
+  }
+
+  /* ----- Shared action buttons ----- */
+
+  .button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 3;
+    margin-left: 2;
+    margin-right: 2;
+    padding-top: 2.5;
+    padding-bottom: 2.5;
+    padding-left: 6;
+    padding-right: 6;
+    background-color: #c8962a; /* gold */
+    border-radius: 3;
+    cursor: pointer;
+  }
+
+  .button-label {
+    font-size: 4;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+  }
+
+  /* A smaller button used for the crop-shift choices. */
+  .pick-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1.5;
+    margin-left: 1.5;
+    margin-right: 1.5;
+    padding-top: 2;
+    padding-bottom: 2;
+    padding-left: 4;
+    padding-right: 4;
+    background-color: #fbf4e3; /* light cream */
+    border-width: 1;
+    border-color: #1F3A5F; /* navy */
+    border-radius: 2;
+    cursor: pointer;
+  }
+
+  .pick-label {
+    font-size: 3.4;
+    font-weight: bold;
+    color: #1F3A5F; /* navy */
+  }
+</style>
+
+<div class="panel">
+  <!-- ====================================================================
+       BEAT 1 — SAMUEL'S NEWS
+       ==================================================================== -->
+  <div id="s2-beat1" class="beat">
+    <span class="heading">Season 2: A Turn in the Market</span>
+
+    <!-- NPC name label sits above Samuel's dialogue bubble. -->
+    <span id="npc-name" class="npc-name">Samuel</span>
+    <div class="dialogue">
+      <span id="samuel-line" class="dialogue-line">...</span>
+    </div>
+
+    <!-- The MARKET REPORT stat card. index.ts fills these three lines based on
+         which event was rolled (event name, affected crop, plain-language change). -->
+    <div class="report-card">
+      <span class="report-title">MARKET REPORT</span>
+      <span id="report-event" class="report-event">...</span>
+      <span id="report-crop" class="report-crop">...</span>
+      <span id="report-change" class="report-change">...</span>
+    </div>
+
+    <div id="strategy-button" class="button"><span class="button-label">Decide Your Strategy</span></div>
+  </div>
+
+  <!-- ====================================================================
+       BEAT 2 — STUDENT RESPONSE
+       ==================================================================== -->
+  <div id="s2-beat2" class="beat">
+    <span class="heading">How Will You Adapt?</span>
+
+    <!-- The crops (and plot counts) the student planted back in Season 1. -->
+    <span id="portfolio-text" class="portfolio">Your crops: ...</span>
+
+    <!-- The three strategy choices. index.ts hides this row once a choice is made. -->
+    <div id="options-row" class="options">
+      <div id="shift-button" class="button"><span class="button-label">Shift Crops</span></div>
+      <div id="doubledown-button" class="button"><span class="button-label">Double Down</span></div>
+      <div id="diversify-button" class="button"><span class="button-label">Diversify</span></div>
+    </div>
+
+    <!-- Crop picker for "Shift Crops". Hidden until the student taps Shift Crops.
+         index.ts fills up to 4 buttons with crops NOT hurt by the event and
+         hides the unused ones. -->
+    <div id="shift-picker" class="picker">
+      <span class="subtext">Tap a crop to shift your plots toward:</span>
+      <div class="picker-row">
+        <div id="shift-opt-0" class="pick-button"><span id="shift-opt-label-0" class="pick-label">Crop</span></div>
+        <div id="shift-opt-1" class="pick-button"><span id="shift-opt-label-1" class="pick-label">Crop</span></div>
+        <div id="shift-opt-2" class="pick-button"><span id="shift-opt-label-2" class="pick-label">Crop</span></div>
+        <div id="shift-opt-3" class="pick-button"><span id="shift-opt-label-3" class="pick-label">Crop</span></div>
+      </div>
+    </div>
+
+    <!-- Confirmation + harvest button. Hidden until the student commits to a choice. -->
+    <div id="confirm-area" class="confirm">
+      <span id="confirm-line" class="confirm-line">...</span>
+      <div id="harvest-button" class="button"><span class="button-label">Begin Harvest</span></div>
+    </div>
+  </div>
+</div>
