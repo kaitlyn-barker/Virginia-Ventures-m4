@@ -25,6 +25,7 @@ import {
   Group, // an empty container for assembling multi-part props (the scoreboard)
   SphereGeometry, // a ball shape; used for Samuel's head
   Vector3, // a 3D point in space; used to measure how far the player is from Samuel
+  Quaternion, // an orientation; used to head-lock the in-headset mini HUD
   CanvasTexture, // wraps an HTML <canvas> so we can draw text and use it as a texture
   DoubleSide, // makes a flat plane visible from both front and back
   SRGBColorSpace, // keeps canvas-drawn colors looking correct in the 3D scene
@@ -39,6 +40,10 @@ import {
   EnvironmentType,
   VisibilityState, // tells us browser (non-immersive) vs in-headset (XR) mode
 } from "@iwsdk/core";
+
+// The market model: one continuous source of truth for crop prices, yields, and
+// their season-by-season history (see src/market.ts, Phase 1.2).
+import { market } from "./market";
 
 // The visual world (sky, lighting, terrain, farmhouse, stall, trees, Samuel's
 // body, and the little crop plant models) lives in its own module so this file
@@ -99,8 +104,12 @@ const CONSTANTS = {
   NPC_NAME: "Samuel",
 };
 
-// Market event is randomized at runtime — 0=Drought, 1=Cotton surge, 2=Tobacco oversupply
-const SEASON2_EVENT = Math.floor(Math.random() * 3);
+// Roll which Season 2 market event happens (0=Drought, 1=Cotton surge,
+// 2=Tobacco oversupply). Called once at startup AND again on every "Play Again",
+// so each new game gets a fresh event without a page refresh.
+function rollSeason2Event(): number {
+  return Math.floor(Math.random() * 3);
+}
 
 // ============================================================================
 // CROP DATA (for the setup / crop-selection screen)
@@ -495,6 +504,52 @@ function setHudSeason(phase: string) {
   if (hudSeasonChip) hudSeasonChip.textContent = scoreboardSeasonLabel;
 }
 
+// ============================================================================
+// TIMER REGISTRY (Phase 1.4)
+// ----------------------------------------------------------------------------
+// Every repeating timer used to be a bare setInterval scattered through the
+// file, which made it easy to leak one across a "Play Again". These helpers keep
+// a single registry so we can (a) count how many are live (a baseline check
+// after replay) and (b) clear a whole phase's timers at once.
+//
+// Two kinds of timer share the registry, tagged by `phase`:
+//   • "global"  — the input pollers created ONCE at startup. They idle until
+//                 their phase is active and run for the whole session.
+//   • a phase id — short-lived animations cleared when that phase tears down.
+// ============================================================================
+type TimerId = ReturnType<typeof setInterval>;
+const activeTimers = new Map<TimerId, string>(); // timer id -> phase bucket
+
+// addWatcher(fn, ms=33, phase="global"): start a tracked repeating timer.
+function addWatcher(fn: () => void, ms = 33, phase = "global"): TimerId {
+  const id = setInterval(fn, ms);
+  activeTimers.set(id, phase);
+  return id;
+}
+
+// clearWatcher(id): stop and forget one tracked timer (null-safe).
+function clearWatcher(id: TimerId | null | undefined): void {
+  if (id === null || id === undefined) return;
+  clearInterval(id);
+  activeTimers.delete(id);
+}
+
+// clearPhaseTimers(phase): stop and forget every timer tagged with a phase.
+function clearPhaseTimers(phase: string): void {
+  for (const [id, p] of activeTimers) {
+    if (p === phase) {
+      clearInterval(id);
+      activeTimers.delete(id);
+    }
+  }
+}
+
+// activeWatcherCount(): how many timers are live right now. Logged around
+// "Play Again" so we can confirm the count returns to its startup baseline.
+function activeWatcherCount(): number {
+  return activeTimers.size;
+}
+
 // NOTE: createHUD() is called a little further down (right after the Season 1
 // state block) because refreshHUD() reads `farmRevenue`, which is declared
 // there — calling it earlier would crash on the not-yet-initialized variable.
@@ -505,23 +560,20 @@ function setHudSeason(phase: string) {
 // Plain variables that remember what the student has done on the Season 1
 // screen. They live here at the top level so later phases can read them too.
 // ============================================================================
-let season1Beat = 1; // which of the 3 beats is showing (1, 2, or 3)
 let season1Decision: "sell" | "hold" | null = null; // the student's final choice
 let farmRevenue = 0; // total coins earned from selling crops (starts at 0)
 
 // How many plots of each crop the student planted (crop name -> plot count).
 const plotCounts: Record<string, number> = {};
-// The market price rolled for each crop on entering Beat 3 (crop name -> price).
-const marketPrices: Record<string, number> = {};
 // Crops kept back instead of sold, if the student chooses "Hold for Later".
 // Typed loosely as any[] because the new world-space Season 1 stores a plain
 // copy of plantingRecord here ([...plantingRecord]), while older code stored
 // richer { crop, units, price } objects. Starts empty.
 let heldInventory: any[] = [];
 
-// The market price rolled for each PLANTED crop when Season 1's market opens.
-// Keyed by crop id, e.g. { tobacco: 9, corn: 2 }. Filled in startSeason1Market().
-let currentPrices: Record<string, number> = {};
+// Crop prices/yields now live in ONE continuous model (src/market.ts). Season 1
+// seeds them, Season 2 continues from them, Season 3 stacks on top — so a held
+// crop's price stays continuous across seasons. Read via market.prices/.yields.
 
 // Yield-per-plot for each crop, pulled from CONSTANTS and keyed by crop name so
 // we can look it up from the selectedCrops list (which stores names).
@@ -552,34 +604,19 @@ createHUD();
 // live here so later phases (and the panel wiring below) can read them.
 // ============================================================================
 
-// Which event happened this playthrough. SEASON2_EVENT was rolled once at the
-// top of the file (0 = Drought, 1 = Cotton surge, 2 = Tobacco oversupply).
-let season2Event = SEASON2_EVENT;
+// Which event happened this playthrough (0 = Drought, 1 = Cotton surge,
+// 2 = Tobacco oversupply). Re-rolled on every "Play Again" (see handlePlayAgain).
+let season2Event = rollSeason2Event();
 
 // The student's reaction to the event: 'shift', 'doubledown', or 'diversify'.
 // Stays null until they tap one of the three choice buttons in Beat 2.
 let season2Decision: "shift" | "doubledown" | "diversify" | null = null;
 
-// The crop prices AFTER the event's effect is applied. Keyed by lowercase crop
-// id (matching the ids in the CROPS list) so other code can look a price up by
-// crop. Filled in by applySeason2Event() when the student reaches Season 2.
-let activePrices: Record<string, number> = {
-  tobacco: 0,
-  wheat: 0,
-  corn: 0,
-  cotton: 0,
-};
+// Post-event prices/yields now live in the shared market model: read them as
+// market.prices[id] and market.yields[id]. Season 2 CONTINUES from the Season 1
+// prices rather than resetting to base, so the series stays continuous.
 
-// The crop yields AFTER the event's effect (only the drought changes a yield,
-// but we keep all four here so the data stays in one predictable shape).
-let activeYields: Record<string, number> = {
-  tobacco: 0,
-  wheat: 0,
-  corn: 0,
-  cotton: 0,
-};
-
-// One entry per possible market event. The index matches SEASON2_EVENT, so
+// One entry per possible market event. The index matches season2Event, so
 // SEASON2_EVENTS[season2Event] is "the event that happened". Each entry holds
 // every piece of text the Season 2 screen needs, plus which crop is affected.
 const SEASON2_EVENTS = [
@@ -620,45 +657,14 @@ const SEASON2_EVENTS = [
   },
 ];
 
-// applySeason2Event(): start every crop from its base price/yield (in CONSTANTS)
-// then apply the effect of whichever event was rolled. Runs once when the
-// student enters Season 2. After this, activePrices/activeYields hold the
-// "this season" numbers that the rest of Season 2 should use.
+// applySeason2Event(): apply whichever event was rolled to the shared market
+// model. The market CONTINUES from the Season 1 prices (it does NOT reset to
+// base), so a crop the student held keeps its Season 1 value plus this event's
+// change. Runs once when the student enters Season 2.
 function applySeason2Event() {
-  // 1. Reset to the unmodified base values from CONSTANTS.
-  activePrices = {
-    tobacco: CONSTANTS.PRICE_TOBACCO,
-    wheat: CONSTANTS.PRICE_WHEAT,
-    corn: CONSTANTS.PRICE_CORN,
-    cotton: CONSTANTS.PRICE_COTTON,
-  };
-  activeYields = {
-    tobacco: CONSTANTS.YIELD_TOBACCO,
-    wheat: CONSTANTS.YIELD_WHEAT,
-    corn: CONSTANTS.YIELD_CORN,
-    cotton: CONSTANTS.YIELD_COTTON,
-  };
-
-  // 2. Apply just the one effect that matches this playthrough's event.
-  if (season2Event === 0) {
-    // Drought: only half as much corn exists (yield halved) — and because
-    // corn is now SCARCE, each unit sells for MORE (+3 coins). That's the
-    // supply half of supply-and-demand.
-    activePrices.corn = activePrices.corn + 3;
-    activeYields.corn = Math.round(activeYields.corn / 2);
-  } else if (season2Event === 1) {
-    // Cotton demand surge: cotton is worth 4 coins more.
-    activePrices.cotton = activePrices.cotton + 4;
-  } else if (season2Event === 2) {
-    // Tobacco oversupply: tobacco is worth 3 coins less.
-    activePrices.tobacco = Math.max(1, activePrices.tobacco - 3);
-  }
-
+  market.applySeason2Event(season2Event);
   console.log(
-    "Season 2 event applied (" +
-      SEASON2_EVENTS[season2Event].name +
-      "). Active prices: " +
-      JSON.stringify(activePrices),
+    "Season 2 event applied (" + SEASON2_EVENTS[season2Event].name + ").",
   );
 }
 
@@ -769,18 +775,11 @@ let season3Decision: "expand" | "protect" | null = null;
 
 // applySeason3Event(): nudge EVERY current crop price by the event's delta.
 // Unlike Season 2, we do NOT reset to base prices first — Season 3 builds on
-// top of whatever Season 2 left in activePrices, so the price swings stack.
+// top of whatever Season 2 left in market.prices, so the price swings stack.
 function applySeason3Event() {
-  const delta = SEASON3_EVENTS[season3Event].priceDelta;
-  for (const id in activePrices) {
-    // Apply the change, but never let a crop fall below 1 coin.
-    activePrices[id] = Math.max(1, activePrices[id] + delta);
-  }
+  market.applySeason3Event(SEASON3_EVENTS[season3Event].priceDelta);
   console.log(
-    "Season 3 event applied (" +
-      SEASON3_EVENTS[season3Event].name +
-      "). Active prices: " +
-      JSON.stringify(activePrices),
+    "Season 3 event applied (" + SEASON3_EVENTS[season3Event].name + ").",
   );
 }
 
@@ -1104,7 +1103,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   // setInterval, NOT requestAnimationFrame: the browser suspends window rAF
   // during immersive WebXR sessions, which would freeze this guard (and every
   // watcher loop below) on a real headset. Timers keep ticking in XR.
-  setInterval(hitTestVisibilityLoop, 33);
+  addWatcher(hitTestVisibilityLoop);
 
   // ==========================================================================
   // FARM ENVIRONMENT
@@ -1493,239 +1492,6 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   // Wire up all three beats once the panel's UI document has loaded. (The same
   // whenPanelReady helper used by the setup screen above.)
   whenPanelReady(season1Panel, (doc) => {
-    // ------------------------------------------------------------------------
-    // Beat switching: show exactly one beat by flipping each beat container's
-    // `display` between "flex" (visible) and "none" (hidden).
-    // ------------------------------------------------------------------------
-    function showSeason1Beat(beat: number) {
-      season1Beat = beat; // remember which beat is active
-      doc
-        .getElementById("beat1")
-        ?.setProperties({ display: beat === 1 ? "flex" : "none" });
-      doc
-        .getElementById("beat2")
-        ?.setProperties({ display: beat === 2 ? "flex" : "none" });
-      doc
-        .getElementById("beat3")
-        ?.setProperties({ display: beat === 3 ? "flex" : "none" });
-    }
-
-    // ========================================================================
-    // BEAT 1 — PLANTING
-    // ========================================================================
-
-    // Add up the plots across every selected crop (used for the 12-plot cap).
-    function totalPlots() {
-      let sum = 0;
-      for (const name of selectedCrops) {
-        sum += plotCounts[name] || 0;
-      }
-      return sum;
-    }
-
-    // Refresh the "Total plots: X / 12" line.
-    function updateTotalText() {
-      doc
-        .getElementById("total-text")
-        ?.setProperties({ text: "Total plots: " + totalPlots() + " / 12" });
-    }
-
-    // Fill in the plot rows from the selected crops, hiding any unused slots.
-    function renderBeat1() {
-      for (let i = 0; i < 4; i++) {
-        const row = doc.getElementById("plot-row-" + i);
-        const name = selectedCrops[i]; // undefined if fewer than 4 crops chosen
-        if (name) {
-          // Show this row and fill in the crop's name + current plot count.
-          row?.setProperties({ display: "flex" });
-          doc.getElementById("plot-name-" + i)?.setProperties({ text: name });
-          doc
-            .getElementById("plot-count-" + i)
-            ?.setProperties({ text: String(plotCounts[name]) });
-        } else {
-          // No crop for this slot — hide the whole row.
-          row?.setProperties({ display: "none" });
-        }
-      }
-      updateTotalText();
-    }
-
-    // Add (+1) or remove (-1) a plot for the crop in a given row slot.
-    function changePlots(slot: number, delta: number) {
-      const name = selectedCrops[slot];
-      if (!name) return; // empty slot — nothing to change
-      const current = plotCounts[name] || 1;
-
-      if (delta > 0) {
-        // Adding a plot: max 6 per crop, and 12 total across all crops.
-        if (current >= 6) return;
-        if (totalPlots() >= 12) return;
-        plotCounts[name] = current + 1;
-      } else {
-        // Removing a plot: never go below 1 plot for a planted crop.
-        if (current <= 1) return;
-        plotCounts[name] = current - 1;
-      }
-
-      // Update just this row's count, then refresh the running total.
-      doc
-        .getElementById("plot-count-" + slot)
-        ?.setProperties({ text: String(plotCounts[name]) });
-      updateTotalText();
-    }
-
-    // Wire each row's "+" and "-" buttons. The ids are fixed, so we only do
-    // this once. We capture `i` in `slot` so each handler edits its own row.
-    for (let i = 0; i < 4; i++) {
-      const slot = i;
-      doc
-        .getElementById("plot-plus-" + slot)
-        ?.setProperties({ onClick: () => changePlots(slot, +1) });
-      doc
-        .getElementById("plot-minus-" + slot)
-        ?.setProperties({ onClick: () => changePlots(slot, -1) });
-    }
-
-    // "Tend Your Crops" advances to Beat 2.
-    doc
-      .getElementById("tend-button")
-      ?.setProperties({ onClick: () => startBeat2() });
-
-    // ========================================================================
-    // BEAT 2 — TENDING (3-second progress bar)
-    // ========================================================================
-    const progressFill = doc.getElementById("progress-fill");
-    const marketButton = doc.getElementById("market-button");
-
-    // Show Beat 2 and start the timer that fills the progress bar.
-    function startBeat2() {
-      showSeason1Beat(2);
-      runProgressBar();
-    }
-
-    // Animate the gold fill from width 0 up to the full track width (120, which
-    // matches the .progress-track width in season1.uikitml) over 3 seconds.
-    // We use a simple setInterval timer — NOT a CSS animation.
-    function runProgressBar() {
-      // Hide the "Check the Market" button until the bar is full.
-      marketButton?.setProperties({ display: "none" });
-
-      const fullWidth = 120; // must match the track width in the .uikitml
-      const durationMs = 3000; // 3 seconds total
-      const stepMs = 50; // update about 20 times per second
-      let elapsed = 0;
-
-      const timer = setInterval(() => {
-        elapsed += stepMs;
-        const progress = Math.min(elapsed / durationMs, 1); // goes 0 -> 1
-        progressFill?.setProperties({ width: fullWidth * progress });
-
-        if (progress >= 1) {
-          clearInterval(timer); // stop the timer
-          // Bar is full — reveal the button that moves on to Beat 3.
-          marketButton?.setProperties({ display: "flex" });
-        }
-      }, stepMs);
-    }
-
-    // "Check the Market" advances to Beat 3.
-    marketButton?.setProperties({ onClick: () => enterBeat3() });
-
-    // ========================================================================
-    // BEAT 3 — FIRST MARKET PRICES
-    // ========================================================================
-
-    // Roll each crop's current market price ONCE, when entering Beat 3, and
-    // remember it. Current price = base price +/- a random 1 or 2 coins.
-    function computeMarketPrices() {
-      for (const name of selectedCrops) {
-        const crop = getCropByName(name);
-        if (!crop) continue;
-        const magnitude = 1 + Math.floor(Math.random() * 2); // 1 or 2 coins
-        const sign = Math.random() < 0.5 ? -1 : 1; // minus or plus
-        let price = crop.price + sign * magnitude;
-        if (price < 1) price = 1; // a crop is never worth less than 1 coin
-        marketPrices[name] = price;
-      }
-    }
-
-    // Fill in the price cards from the selected crops, hiding unused slots.
-    function renderBeat3() {
-      for (let i = 0; i < 4; i++) {
-        const card = doc.getElementById("price-card-" + i);
-        const name = selectedCrops[i];
-        if (name) {
-          const crop = getCropByName(name);
-          card?.setProperties({ display: "flex" });
-          doc.getElementById("price-name-" + i)?.setProperties({ text: name });
-          doc
-            .getElementById("price-base-" + i)
-            ?.setProperties({ text: "Base price: " + (crop?.price ?? 0) + " coins" });
-          doc.getElementById("price-current-" + i)?.setProperties({
-            text: "Current market price: " + marketPrices[name] + " coins",
-          });
-        } else {
-          card?.setProperties({ display: "none" });
-        }
-      }
-    }
-
-    // Show Beat 3: roll prices first, then fill the cards.
-    function enterBeat3() {
-      computeMarketPrices();
-      renderBeat3();
-      showSeason1Beat(3);
-    }
-
-    // "Sell Now": sell every crop at its current price and bank the earnings.
-    function sellNow() {
-      season1Decision = "sell";
-
-      // Earnings = current price x units harvested, summed over all crops.
-      // Units harvested = yield-per-plot (CONSTANTS) x number of plots planted.
-      let earnings = 0;
-      for (const name of selectedCrops) {
-        const price = marketPrices[name] || 0;
-        const yieldPerPlot = YIELD_BY_NAME[name] || 0;
-        const plots = plotCounts[name] || 0;
-        earnings += price * yieldPerPlot * plots;
-      }
-
-      farmRevenue += earnings; // add this season's sale to the running total
-      console.log(
-        "Sold all crops for " + earnings + " coins. Farm revenue: " + farmRevenue,
-      );
-
-      updateScore("revenue", 10); // reward for earning money
-      nextPhase(); // move on to Season 2
-    }
-
-    // "Hold and Wait": keep the crops as inventory for later instead of selling.
-    function holdAndWait() {
-      season1Decision = "hold";
-
-      // Store what we're holding: how many units of each crop, plus the price
-      // we saw, so a later season can decide what the held crops are worth.
-      heldInventory = [];
-      for (const name of selectedCrops) {
-        const yieldPerPlot = YIELD_BY_NAME[name] || 0;
-        const plots = plotCounts[name] || 0;
-        heldInventory.push({
-          crop: name,
-          units: yieldPerPlot * plots,
-          price: marketPrices[name] || 0,
-        });
-      }
-      console.log("Holding crops for later. Decision: " + season1Decision);
-
-      updateScore("adaptability", 5); // reward for a flexible, wait-and-see move
-      nextPhase(); // move on to Season 2
-    }
-
-    // Wire the two final choice buttons.
-    doc.getElementById("sell-button")?.setProperties({ onClick: () => sellNow() });
-    doc.getElementById("hold-button")?.setProperties({ onClick: () => holdAndWait() });
-
     // ========================================================================
     // SEASON 1 — NOW PLAYED IN THE 3D WORLD (not on the flat panel above)
     // ------------------------------------------------------------------------
@@ -1950,15 +1716,13 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // THE WORLD-SPACE MARKET (price board near Samuel + corkboard choice)
     // ========================================================================
     function startSeason1Market() {
-      // -- Roll this season's price for each PLANTED crop --------------------
+      // -- Seed this playthrough's opening prices ----------------------------
+      // The shared market model rolls each crop's Season 1 price (base ± a small
+      // swing) for ALL crops, so later seasons' price signs stay continuous.
+      // Seasons 2 and 3 then build on top of these prices instead of resetting.
+      market.initSeason1(BASE_PRICE, BASE_YIELD);
       // Unique crop ids the student planted, e.g. ["tobacco", "corn"].
       const uniqueCrops = [...new Set(plantingRecord.map((r) => r.cropType))];
-      currentPrices = {}; // fresh prices each season
-      for (const crop of uniqueCrops) {
-        // Base price from CONSTANTS, nudged by a small -2..+2 random swing.
-        const swing = Math.floor(Math.random() * 5) - 2; // -2, -1, 0, +1, or +2
-        currentPrices[crop] = BASE_PRICE[crop] + swing;
-      }
 
       // Helper: how many plots the student planted of one crop.
       function plotsOf(cropId: string): number {
@@ -1987,7 +1751,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // Green ▲ = today's price is above the base price, red ▼ = below it, so
       // a student can read the market at a glance.
       const priceLines = uniqueCrops.map((crop) => {
-        const price = currentPrices[crop];
+        const price = market.prices[crop];
         const base = BASE_PRICE[crop] || 0;
         const arrow = price > base ? " ▲" : price < base ? " ▼" : "";
         const color =
@@ -2063,7 +1827,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // sum over crops of (plots * yield-per-plot * current price).
       let estEarnings = 0;
       for (const crop of uniqueCrops) {
-        estEarnings += plotsOf(crop) * (BASE_YIELD[crop] || 0) * currentPrices[crop];
+        estEarnings += plotsOf(crop) * (BASE_YIELD[crop] || 0) * market.prices[crop];
       }
 
       // SELL NOW card (left) -- a cream card box, raised slightly off the board
@@ -2134,7 +1898,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       let earnings = 0;
       for (const record of plantingRecord) {
         const crop = record.cropType;
-        earnings += (BASE_YIELD[crop] || 0) * (currentPrices[crop] || 0);
+        earnings += (BASE_YIELD[crop] || 0) * (market.prices[crop] || 0);
       }
       farmRevenue += earnings; // add to the running farm revenue
       console.log(
@@ -2191,12 +1955,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       }
     }
     // setInterval (not rAF): keeps working inside immersive XR sessions.
-    setInterval(watchMarketCards, 33); // idles until the market opens
-
-    // Clean initial state while the panel is still hidden at startup: show only
-    // Beat 1 and keep the "Check the Market" button hidden until its timer runs.
-    showSeason1Beat(1);
-    marketButton?.setProperties({ display: "none" });
+    addWatcher(watchMarketCards); // idles until the market opens
   });
 
   // ==========================================================================
@@ -2368,7 +2127,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // Shifting is a smart, flexible move -> reward adaptability.
       updateScore("adaptability", 15);
 
-      // activePrices already reflects the event; the new crop is priced from it.
+      // market.prices already reflects the event; the new crop is priced from it.
       console.log(
         "Shifted plots toward " + targetName + ". Plot counts: " + JSON.stringify(plotCounts),
       );
@@ -2630,8 +2389,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         s2Timers.push(timer);
       }
 
-      // Scarce corn sells for MORE — raise the price as Samuel breaks the news.
-      activePrices.corn = CONSTANTS.PRICE_CORN + 3;
+      // Scarce corn sells for MORE. The price change itself is applied once by
+      // the market model (applySeason2Event); here we just tell the story.
       samuelSpeak(
         "Bad news, friend. A fierce drought dried the fields. 🌞 There's only HALF the usual corn this year. Hmm… what do you think that does to corn's price?",
       );
@@ -2655,8 +2414,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       horizonShip = makeBox(2, 0.6, 0.5, "#1F3A5F", [0, 0.8, -21]);
       s2WorldEntities.push(horizonShip);
 
-      // Raise the cotton price and let Samuel share the good word.
-      activePrices.cotton = CONSTANTS.PRICE_COTTON + 4;
+      // The cotton price rise is applied once by the market model
+      // (applySeason2Event); here we just let Samuel share the good word.
       samuelSpeak(
         "Word from the docks — England wants all the cotton we can grow! ☁️ Ships are waiting. If you planted cotton, this is your moment!",
       );
@@ -2684,15 +2443,15 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         s2WorldEntities.push(sprout);
       }
 
-      // Lower the tobacco price and let Samuel level with the student.
-      activePrices.tobacco = CONSTANTS.PRICE_TOBACCO - 3;
+      // The tobacco price drop is applied once by the market model
+      // (applySeason2Event); here Samuel just levels with the student.
       samuelSpeak(
         "I'll be honest with you. Everyone grew tobacco this year. 🌿 With so much for sale, the price has dropped — hard. 📉",
       );
     }
 
     // ------------------------------------------------------------------------
-    // PRICE SIGN at Samuel's stall — shows the updated activePrices so the
+    // PRICE SIGN at Samuel's stall — shows the updated market.prices so the
     // student can walk over and read exactly what the event changed.
     // ------------------------------------------------------------------------
     function buildS2PriceSign() {
@@ -2722,7 +2481,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         cotton: CONSTANTS.PRICE_COTTON,
       };
       const s2PriceLines = ["tobacco", "wheat", "corn", "cotton"].map((id) => {
-        const price = activePrices[id];
+        const price = market.prices[id];
         const base = s2BasePrices[id];
         const arrow = price > base ? " ▲" : price < base ? " ▼" : "";
         const color =
@@ -2871,24 +2630,18 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       }
     }
     // setInterval (not rAF): keeps working inside immersive XR sessions.
-    setInterval(watchSeason2Cards, 33); // idles until the corkboard opens
+    addWatcher(watchSeason2Cards); // idles until the corkboard opens
 
     // buildSeason2World(): assemble everything for whichever event was rolled.
     function buildSeason2World() {
       // Clear out anything left from a previous playthrough (replay safety).
       teardownSeason2World();
 
-      // 1. Start activePrices from the untouched base prices in CONSTANTS.
-      //    (applySeason2Event already does this; we re-assert it here so the
-      //    price math sits right next to the visuals it explains.)
-      activePrices = {
-        tobacco: CONSTANTS.PRICE_TOBACCO,
-        wheat: CONSTANTS.PRICE_WHEAT,
-        corn: CONSTANTS.PRICE_CORN,
-        cotton: CONSTANTS.PRICE_COTTON,
-      };
+      // Prices are already set: applySeason2Event() (called from onEnterSeason2)
+      // continued the Season 1 series and applied this event's change once. We
+      // do NOT reset to base here — that would throw away the Season 1 prices.
 
-      // 2. Apply this event's world effects + price change (and Samuel's line).
+      // Apply this event's world effects + Samuel's line (no price math here).
       if (season2Event === 0) {
         applyDroughtEvent();
       } else if (season2Event === 1) {
@@ -2929,7 +2682,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // ------------------------------------------------------------------------
     onEnterSeason2 = () => {
       season2Decision = null; // clear any previous choice
-      applySeason2Event(); // bake the event into activePrices/activeYields
+      applySeason2Event(); // bake the event into market.prices/market.yields
 
       // Hide the flat Season 2 panel — this season now plays out in the 3D
       // world (field effects, the stall price sign, and the wall corkboard).
@@ -3062,12 +2815,12 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     }
 
     // Build the "Current prices: Tobacco 7, Wheat 5, ..." line from the updated
-    // activePrices, listing only the crops the student is actually growing.
+    // market.prices, listing only the crops the student is actually growing.
     function pricesText() {
       if (selectedCrops.length === 0) return "Current prices: (no crops)";
       const parts = selectedCrops.map((name) => {
         const crop = getCropByName(name);
-        const price = crop ? activePrices[crop.id] || 0 : 0;
+        const price = crop ? market.prices[crop.id] || 0 : 0;
         return name + " " + price;
       });
       return "Current prices: " + parts.join(", ") + " coins";
@@ -3137,15 +2890,15 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // running farmRevenue total, and show the summary line + report button.
     function finishHarvest() {
       // 1. Earnings = plots x yield x current price, summed over every crop.
-      //    activeYields already holds the CONSTANTS yields modified by any
+      //    market.yields already holds the CONSTANTS yields modified by any
       //    earlier event (e.g. the Season 2 drought halved corn's yield).
       let earnings = 0;
       for (const name of selectedCrops) {
         const crop = getCropByName(name);
         if (!crop) continue;
         const plots = plotCounts[name] || 0;
-        const yieldPerPlot = activeYields[crop.id] || 0;
-        const price = activePrices[crop.id] || 0;
+        const yieldPerPlot = market.yields[crop.id] || 0;
+        const price = market.prices[crop.id] || 0;
         earnings += plots * yieldPerPlot * price;
       }
 
@@ -3159,8 +2912,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         // what produced NaN — those fields don't exist on these items.)
         for (const item of heldInventory) {
           const id = item.cropType;
-          const unitsPerPlot = activeYields[id] || 0;
-          const price = activePrices[id] || 0;
+          const unitsPerPlot = market.yields[id] || 0;
+          const price = market.prices[id] || 0;
           heldSale += unitsPerPlot * price;
         }
       }
@@ -3324,7 +3077,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         cotton: CONSTANTS.PRICE_COTTON,
       };
       const s3PriceLines = ["tobacco", "wheat", "corn", "cotton"].map((id) => {
-        const price = activePrices[id];
+        const price = market.prices[id];
         const base = s3BasePrices[id];
         const arrow = price > base ? " ▲" : price < base ? " ▼" : "";
         const color =
@@ -3539,7 +3292,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       }
     }
     // setInterval (not rAF): keeps working inside immersive XR sessions.
-    setInterval(watchSeason3Cards, 33); // idles until the corkboard opens
+    addWatcher(watchSeason3Cards); // idles until the corkboard opens
 
     // buildSeason3World(): clear any leftovers, then gate the final decision
     // behind Samuel's news + one last market quiz — the price sign and the
@@ -3969,10 +3722,11 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     scoreCropHealth = CONSTANTS.CROP_HEALTH_START;
     scoreAdaptability = CONSTANTS.MARKET_ADAPTABILITY_START;
 
-    // Forget the chosen crops plus every per-crop plot count and market price.
+    // Forget the chosen crops plus every per-crop plot count, and wipe the
+    // market's price series so the new run starts fresh (Season 1 re-seeds it).
     selectedCrops = [];
     for (const key in plotCounts) delete plotCounts[key];
-    for (const key in marketPrices) delete marketPrices[key];
+    market.reset();
 
     // Clear all of the decision + bookkeeping variables from the last run.
     season1Decision = null;
@@ -3985,10 +3739,16 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // first left last year's coin total ("Coins earned: 904") on screen.
     refreshHUD();
 
-    // Roll a fresh random Season 2 market event for the new game (0, 1, or 2).
-    // (SEASON2_EVENT itself is a const set at load; season2Event is the value
-    // the game actually reads, so we re-randomize that.)
-    season2Event = Math.floor(Math.random() * 3);
+    // Roll a fresh random Season 2 market event for the new game (0, 1, or 2)
+    // so two consecutive runs can differ without a page refresh.
+    season2Event = rollSeason2Event();
+
+    // Per-phase animation timers self-clear on teardown; the only timers that
+    // persist are the startup input pollers. Log the count so we can confirm it
+    // holds at its baseline across replays (no leaked per-phase watchers).
+    console.log(
+      "[timers] active watcher count after Play Again: " + activeWatcherCount(),
+    );
 
     // Back to the setup / crop-selection screen to start over.
     showPhase(PHASE_SETUP);
@@ -4006,7 +3766,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     }
   }
   // setInterval (not rAF): keeps working inside immersive XR sessions.
-  setInterval(watchPlayAgainButton, 33);
+  addWatcher(watchPlayAgainButton);
 
   // --------------------------------------------------------------------------
   // ENTER REPORT: runs from showPhase('report') via the onEnterReport hook, once
@@ -4449,7 +4209,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     }
   }
   // setInterval (not rAF): keeps working inside immersive XR sessions.
-  setInterval(watchSamuelGotItButton, 33);
+  addWatcher(watchSamuelGotItButton);
 
   // --------------------------------------------------------------------------
   // checkSamuelProximity(): runs every frame. If the player's head/camera is
@@ -4505,7 +4265,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     checkSamuelProximity();
   }
   // setInterval (not rAF): keeps working inside immersive XR sessions.
-  setInterval(samuelFrameLoop, 33);
+  addWatcher(samuelFrameLoop);
 
   // ==========================================================================
   // SAMUEL'S MARKET QUIZ — "Will prices go UP or DOWN?"
@@ -4612,7 +4372,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     }
   }
   // setInterval (not rAF): keeps working inside immersive XR sessions.
-  setInterval(watchQuizCards, 33);
+  addWatcher(watchQuizCards);
 
   // --------------------------------------------------------------------------
   // makeLockedNote(): the "this board is locked" sign that hangs where a
@@ -4926,7 +4686,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     selectedCrops = [...new Set(plantedIds.map(idToName))];
 
     // plantingRecord keeps one entry per planted plot, keyed by lowercase ID,
-    // because Season 1's market (currentPrices / BASE_PRICE / BASE_YIELD) looks
+    // because Season 1's market (market.prices / BASE_PRICE / BASE_YIELD) looks
     // crops up by id. Do NOT change this to names.
     plantingRecord = plantedIds.map((id) => ({ cropType: id }));
 
@@ -4989,7 +4749,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
 
   }
   // setInterval (not rAF): keeps working inside immersive XR sessions.
-  setInterval(seedFrameLoop, 33);
+  addWatcher(seedFrameLoop);
 
   // ==========================================================================
   // MARKET REPORT — WORLD-SPACE NOTICE BOARD (the results, out in the 3D world)
@@ -5310,7 +5070,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     }
   }
   // setInterval (not rAF): keeps working inside immersive XR sessions.
-  setInterval(watchBoardPlayAgain, 33);
+  addWatcher(watchBoardPlayAgain);
 
   // ==========================================================================
   // GAME FEEL — world scoreboard, floating score popups, season banners, and
@@ -5456,10 +5216,113 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     updateScoreboard(); // first draw
   }
 
-  // Keep the scoreboard fresh whenever the HUD refreshes or the objective
-  // changes (headset players read their goal off this sign).
-  onHudRefresh = () => updateScoreboard();
-  onObjectiveChange = () => updateScoreboard();
+  // --------------------------------------------------------------------------
+  // IN-HEADSET MINI HUD (Phase 1.3)
+  // --------------------------------------------------------------------------
+  // The top-left DOM HUD is invisible inside an immersive WebXR session, and the
+  // world scoreboard sits at a fixed spot the student has to walk over to. So we
+  // mirror the three things they need at a glance — season, coins, and the
+  // CURRENT objective ("what do I do next?") — onto a small panel that is
+  // head-locked at a low, comfortable offset and shown ONLY in immersive mode.
+  const xrHudCanvas = document.createElement("canvas");
+  xrHudCanvas.width = 512;
+  xrHudCanvas.height = 240;
+  const xrHudCtx = xrHudCanvas.getContext("2d")!;
+  const xrHudTexture = new CanvasTexture(xrHudCanvas);
+  xrHudTexture.colorSpace = SRGBColorSpace;
+  const xrHudMesh = new Mesh(
+    new PlaneGeometry(0.4, 0.1875),
+    new MeshBasicMaterial({
+      map: xrHudTexture,
+      transparent: true,
+      depthTest: false, // always draws on top, never clipped by the world
+    }),
+  );
+  xrHudMesh.renderOrder = 999;
+  xrHudMesh.visible = false; // hidden until we're in immersive mode
+  world.createTransformEntity(xrHudMesh);
+
+  // Draw the mini HUD's canvas from the current season, coins, and objective.
+  function drawXrHud() {
+    const ctx = xrHudCtx;
+    ctx.clearRect(0, 0, 512, 240);
+    // Translucent navy card.
+    ctx.fillStyle = "rgba(31, 58, 95, 0.86)";
+    ctx.beginPath();
+    ctx.roundRect(6, 6, 500, 228, 22);
+    ctx.fill();
+    // Top row: season (left) + coins (right).
+    ctx.textBaseline = "middle";
+    ctx.font = "bold 32px system-ui, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#ffe9b0";
+    ctx.fillText(scoreboardSeasonLabel, 28, 44);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#ffd24a";
+    ctx.fillText("💰 " + farmRevenue, 484, 44);
+    // Objective, word-wrapped to at most three lines.
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 28px system-ui, sans-serif";
+    const words = ("👉 " + (currentObjective || "")).split(" ");
+    const lines: string[] = [];
+    let line = "";
+    for (const word of words) {
+      const candidate = line ? line + " " + word : word;
+      if (ctx.measureText(candidate).width > 452 && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = candidate;
+      }
+    }
+    if (line) lines.push(line);
+    let ly = 108;
+    for (let i = 0; i < Math.min(lines.length, 3); i++) {
+      ctx.fillText(lines[i], 28, ly);
+      ly += 42;
+    }
+    xrHudTexture.needsUpdate = true;
+  }
+  drawXrHud();
+
+  // Head-lock: every frame, place the panel a fixed offset in front of and
+  // slightly below the camera, angled to face the viewer. Temps are allocated
+  // once here (never inside the loop) so there is no per-frame garbage.
+  const xrHudTmpPos = new Vector3();
+  const xrHudTmpQuat = new Quaternion();
+  const xrHudScratch = new Vector3();
+  const xrHudOffset = new Vector3(0, -0.26, -0.8); // head space: down + forward
+  let xrHudWasImmersive = false;
+  function positionXrHud() {
+    const immersive =
+      world.visibilityState.peek() !== VisibilityState.NonImmersive;
+    if (immersive !== xrHudWasImmersive) {
+      xrHudMesh.visible = immersive;
+      if (immersive) drawXrHud(); // freshen the text the moment we enter XR
+      xrHudWasImmersive = immersive;
+    }
+    if (immersive) {
+      camera.getWorldPosition(xrHudTmpPos);
+      camera.getWorldQuaternion(xrHudTmpQuat);
+      xrHudScratch.copy(xrHudOffset).applyQuaternion(xrHudTmpQuat);
+      xrHudMesh.position.copy(xrHudTmpPos).add(xrHudScratch);
+      xrHudMesh.quaternion.copy(xrHudTmpQuat); // face the same way as the head
+    }
+    requestAnimationFrame(positionXrHud);
+  }
+  positionXrHud();
+
+  // Keep the scoreboard AND the in-headset mini HUD fresh whenever the HUD
+  // refreshes or the objective changes (headset players read their goal here).
+  onHudRefresh = () => {
+    updateScoreboard();
+    drawXrHud();
+  };
+  onObjectiveChange = () => {
+    updateScoreboard();
+    drawXrHud();
+  };
 
   // --------------------------------------------------------------------------
   // SCORE POPUPS — a floating "+10 🪙 Farm Coins" that rises off the
