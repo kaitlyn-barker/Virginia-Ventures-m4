@@ -161,6 +161,38 @@ class Market {
     this.supplyHeadline = "";
   }
 
+  // serialize()/restore(): capture and reload the FULL market state (including
+  // the private base tables) for the localStorage autosave (Phase 5.1).
+  serialize(): any {
+    return {
+      prices: { ...this.prices },
+      yields: { ...this.yields },
+      basePrices: { ...this.basePrices },
+      baseYields: { ...this.baseYields },
+      supplyHeadline: this.supplyHeadline,
+      history: this.history.map((h) => ({
+        season: h.season,
+        prices: { ...h.prices },
+        yields: { ...h.yields },
+      })),
+    };
+  }
+  restore(data: any): void {
+    if (!data) return;
+    this.prices = { ...(data.prices || {}) };
+    this.yields = { ...(data.yields || {}) };
+    this.basePrices = { ...(data.basePrices || {}) };
+    this.baseYields = { ...(data.baseYields || {}) };
+    this.supplyHeadline = data.supplyHeadline || "";
+    this.history = Array.isArray(data.history)
+      ? data.history.map((h: any) => ({
+          season: h.season,
+          prices: { ...(h.prices || {}) },
+          yields: { ...(h.yields || {}) },
+        }))
+      : [];
+  }
+
   // No crop is ever worth less than 1 coin.
   private clampFloor(): void {
     for (const id in this.prices) {

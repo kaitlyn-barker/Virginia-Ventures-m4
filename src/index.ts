@@ -982,6 +982,111 @@ let phaseEnterTime = performance.now();
 // so that showPhase() can find the right panel to show or hide.
 const phasePanels: Record<string, any> = {};
 
+// ============================================================================
+// AUTOSAVE (Phase 5.1) — persist the run to localStorage so an accidental
+// refresh doesn't wipe a 25-minute session. We snapshot at the START of each
+// season (a clean phase boundary, before that season's onEnter mutates state);
+// on load the title offers "Resume". Version guards let the format evolve.
+// ============================================================================
+const COMPLETION_SCHEMA_VERSION = 1; // version of the onSimulationComplete payload
+const SAVE_KEY = "market-harvest:autosave";
+const SAVE_SCHEMA_VERSION = 1;
+
+// buildSaveState(): a plain-JSON snapshot of every piece of run state.
+function buildSaveState() {
+  return {
+    version: SAVE_SCHEMA_VERSION,
+    phase: currentPhase,
+    farmSizeKey,
+    scoreRevenue,
+    scoreCropHealth,
+    scoreAdaptability,
+    farmRevenue,
+    selectedCrops: [...selectedCrops],
+    plotCounts: { ...plotCounts },
+    plantingRecord: plantingRecord.map((r) => ({ cropType: r.cropType })),
+    heldInventory: heldInventory.map((r: any) => ({ cropType: r.cropType })),
+    season1Decision,
+    season2Decision,
+    season3Decision,
+    season2Event,
+    season3Event,
+    quizzesCorrect,
+    quizzesTotal,
+    season1Coins,
+    season3Coins,
+    phaseDurations: { ...phaseDurations },
+    market: market.serialize(),
+  };
+}
+
+// saveGame(): write a snapshot, but only for the mid-game seasons (setup has
+// nothing worth keeping yet; report means the run is finished).
+function saveGame() {
+  if (
+    currentPhase !== PHASE_SEASON1 &&
+    currentPhase !== PHASE_SEASON2 &&
+    currentPhase !== PHASE_SEASON3
+  ) {
+    return;
+  }
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(buildSaveState()));
+  } catch (e) {
+    console.warn("[autosave] could not save:", e);
+  }
+}
+
+// loadSave(): return a valid saved run, or null if none / wrong version.
+function loadSave(): any | null {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || data.version !== SAVE_SCHEMA_VERSION) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+// clearSave(): forget the autosave (on finish or a fresh Play Again).
+function clearSave() {
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch {
+    /* localStorage may be unavailable — nothing to clean up */
+  }
+}
+
+// applySaveToState(s): copy a snapshot back into the live run state. The 3D
+// world (field, sprouts, phase visuals) is rebuilt separately in the closure's
+// resumeSavedGame(), which has access to buildField/plantOnPlot.
+function applySaveToState(s: any) {
+  farmSizeKey = s.farmSizeKey;
+  scoreRevenue = s.scoreRevenue;
+  scoreCropHealth = s.scoreCropHealth;
+  scoreAdaptability = s.scoreAdaptability;
+  farmRevenue = s.farmRevenue;
+  selectedCrops = [...(s.selectedCrops || [])];
+  for (const k in plotCounts) delete plotCounts[k];
+  Object.assign(plotCounts, s.plotCounts || {});
+  plantingRecord = (s.plantingRecord || []).map((r: any) => ({ cropType: r.cropType }));
+  heldInventory = (s.heldInventory || []).map((r: any) => ({ cropType: r.cropType }));
+  season1Decision = s.season1Decision;
+  season2Decision = s.season2Decision;
+  season3Decision = s.season3Decision;
+  season2Event = s.season2Event;
+  season3Event = s.season3Event;
+  quizzesCorrect = s.quizzesCorrect;
+  quizzesTotal = s.quizzesTotal;
+  season1Coins = s.season1Coins;
+  season3Coins = s.season3Coins;
+  for (const k in phaseDurations) delete phaseDurations[k];
+  Object.assign(phaseDurations, s.phaseDurations || {});
+  market.restore(s.market);
+}
+
 // showPhase(phase): switch the visible screen to the given phase.
 function showPhase(phase: string) {
   // 0. Bank how long we spent in the phase we're leaving (Phase 2.3 pacing).
@@ -997,6 +1102,11 @@ function showPhase(phase: string) {
 
   // 1. Remember the phase we're switching to.
   currentPhase = phase;
+
+  // 1b. Autosave at the START of a season, BEFORE its onEnter mutates anything
+  //     (Phase 5.1). This snapshot is a clean boundary: re-entering the phase on
+  //     resume redoes that season correctly, with no double-counting.
+  saveGame();
 
   // 2. Hide every panel we know about. (Looping over phasePanels does nothing
   //    yet because it's empty, but it'll hide all panels once they're added.)
@@ -1740,6 +1850,23 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         }
       },
     });
+
+    // Resume (Phase 5.1): if a saved run is found, reveal a "Resume Your Farm"
+    // button that skips the tour and jumps back into the saved season.
+    const savedRun = loadSave();
+    const resumeButton = doc.getElementById("resume-button");
+    if (savedRun) {
+      resumeButton?.setProperties({
+        display: "flex",
+        onClick: () => {
+          sfxClick();
+          resumeSavedGame(savedRun);
+        },
+      });
+      console.log("[autosave] found a saved run at phase: " + savedRun.phase);
+    } else {
+      resumeButton?.setProperties({ display: "none" });
+    }
 
     // Initialize on step 1, then reveal the now-ready panel.
     showWelcomeStep(1);
@@ -4233,6 +4360,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     //    over the final scores, rank, coins, quiz results, a structured Year in
     //    Review, and per-phase durations. Logged so it's visible in the console.
     const completionDetail = {
+      // Phase 5.1: a schema version so the course shell can evolve safely.
+      schemaVersion: COMPLETION_SCHEMA_VERSION,
       scoreRevenue: scoreRevenue,
       scoreCropHealth: scoreCropHealth,
       scoreAdaptability: scoreAdaptability,
@@ -4255,9 +4384,22 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       ),
     };
     console.log("[EVENT] onSimulationComplete", completionDetail);
+    // Fire the CustomEvent for same-window listeners AND postMessage to the
+    // parent window (Phase 5.1). The Rise course shell embeds this game in an
+    // iframe, so a CustomEvent on THIS window never reaches it — the parent
+    // needs the postMessage. Guard the target origin loosely ("*") because the
+    // shell's origin varies by deployment; the shell should verify event.data.
     window.dispatchEvent(
       new CustomEvent("onSimulationComplete", { detail: completionDetail }),
     );
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(
+        { type: "onSimulationComplete", detail: completionDetail },
+        "*",
+      );
+    }
+    // The run is over — clear any autosave so a refresh starts fresh (5.1).
+    clearSave();
   };
 
   // ==========================================================================
@@ -5158,6 +5300,37 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   // clicking crops fills the field row by row.
   function nextEmptyPlot() {
     return fieldPlots.find((p) => p.cropType === null) || null;
+  }
+
+  // resumeSavedGame(save): restore a run from the autosave (Phase 5.1). Copies
+  // the data-model state back, rebuilds the 3D field to the saved farm size and
+  // re-plants it, then enters the saved season — which re-runs that season's
+  // onEnter with the restored state (a clean redo of the season you were on).
+  function resumeSavedGame(save: any) {
+    applySaveToState(save); // scores, crops, market, decisions, events, ...
+
+    // Rebuild the field to the restored size WITHOUT applyFarmSize (which would
+    // reset scoreCropHealth — we've already restored it).
+    buildField(farmSize().rows);
+    resizeFence(farmSize().rows);
+
+    // Re-plant the field from the restored planting record, grown to full so it
+    // looks established (we're past the initial planting).
+    for (const rec of plantingRecord) {
+      const plot = nextEmptyPlot();
+      if (plot) plantOnPlot(plot, rec.cropType);
+    }
+    for (const plot of fieldPlots) {
+      if (plot.cropType && plot.sproutEntity) {
+        plot.sproutEntity.object3D!.scale.y = 1;
+      }
+    }
+
+    // Hide the welcome tour and enter the saved season.
+    welcomePanel.object3D!.visible = false;
+    refreshHUD();
+    console.log("[autosave] resumed at phase: " + save.phase);
+    showPhase(save.phase);
   }
 
   // handleCropClick(): runs when a crop button is clicked. Plant that crop on the

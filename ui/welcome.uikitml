@@ -154,6 +154,28 @@
     font-weight: bold;
     color: #1F3A5F; /* navy */
   }
+
+  /* "Resume Your Farm" — shown only when index.ts finds a saved run (Phase 5.1).
+     Hidden by default; code flips display to "flex". */
+  .resume-button {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    margin-top: 3;
+    padding-top: 3;
+    padding-bottom: 3;
+    padding-left: 8;
+    padding-right: 8;
+    background-color: #5fae4a; /* green = pick up where you left off */
+    border-radius: 4;
+    cursor: pointer;
+  }
+
+  .resume-label {
+    font-size: 4;
+    font-weight: bold;
+    color: #ffffff;
+  }
 </style>
 
 <div class="panel">
@@ -216,5 +238,10 @@
     <div id="next-button" class="next-button">
       <span id="next-label" class="next-label">Next</span>
     </div>
+  </div>
+
+  <!-- Resume: only shown when a saved run is found (Phase 5.1). -->
+  <div id="resume-button" class="resume-button">
+    <span class="resume-label">Resume Your Farm</span>
   </div>
 </div>
