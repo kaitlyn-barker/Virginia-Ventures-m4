@@ -286,7 +286,7 @@
        ==================================================================== -->
   <div id="beat2" class="beat">
     <span class="heading">Tending Your Fields</span>
-    <span class="subtext">Your workers are tending the fields. The summer sun is strong this year.</span>
+    <span class="subtext">Your crops are growing in the field. The summer sun is strong this year.</span>
 
     <!-- Progress bar: a gray track with a gold fill that grows over 3 seconds. -->
     <div class="progress-track">

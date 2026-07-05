@@ -34,6 +34,7 @@ import {
   PanelDocument, // internal component holding a panel's loaded UI document
   Interactable,
   RayInteractable, // marks a plain 3D mesh as clickable by mouse/controller rays
+  Hovered, // transient tag the InputSystem adds while a ray/pointer is over an entity
   Pressed, // transient tag the InputSystem adds while a ray is clicking an entity
   // Floor that the player can stand/walk on
   LocomotionEnvironment,
@@ -223,7 +224,10 @@ const CROPS = [
   {
     id: "corn",
     name: "Corn",
-    description: "High yield, low price. Good for feeding your workers.",
+    // Phase 4.4: reworded to avoid the old "feeding your workers" line. Corn was
+    // a food staple on Virginia farms; the description now stays on the crop
+    // itself. (Historical-labor framing is handled on the welcome panel.)
+    description: "High yield, low price. A dependable food staple.",
     price: CONSTANTS.PRICE_CORN,
     risk: CONSTANTS.RISK_CORN,
   },
@@ -557,7 +561,16 @@ function createHUD() {
 let currentObjective = "";
 let scoreboardSeasonLabel = "Getting Ready"; // drawn on the world scoreboard
 
+// Idle-nudge bookkeeping (Phase 4.2): if the student does nothing for a while,
+// we re-pop the objective to draw their eye back to it — but only once per beat.
+let lastInteractionTime = 0; // performance.now() of the last click or new objective
+let idleNudgedThisBeat = false; // true after we've nudged for the current objective
+const IDLE_NUDGE_MS = 45000; // 45 seconds of no interaction
+
 function setObjective(text: string) {
+  // A NEW objective means a new beat — reset the idle timer and re-arm the nudge.
+  if (text !== currentObjective) idleNudgedThisBeat = false;
+  lastInteractionTime = performance.now();
   currentObjective = text;
   if (hudObjectiveValue) {
     hudObjectiveValue.textContent = "👉 " + text;
@@ -806,7 +819,7 @@ const S2_QUIZ = [
     right:
       "Right! 🌽 When there's LESS of a crop for sale, each one is worth MORE. Scarce things cost more — check the price board!",
     wrong:
-      "Good try! It's the opposite: when there's LESS corn for sale, buyers compete for it — so corn's price goes UP. 📈 Check the board!",
+      "Good try! It's the opposite — LESS corn means buyers compete for it, so the price goes UP. 📈 Check the board!",
   },
   {
     // Cotton surge — DEMAND rises, so price rises.
@@ -824,7 +837,7 @@ const S2_QUIZ = [
     right:
       "Right! 🌿 When there's TOO MUCH of a crop for sale, sellers must drop their prices to find buyers. Check the board!",
     wrong:
-      "Good try! With TOO MUCH tobacco for sale, sellers had to lower prices to find buyers — tobacco went DOWN. 📉 Check the board!",
+      "Good try! TOO MUCH tobacco means sellers must lower prices to find buyers — so it went DOWN. 📉 Check the board!",
   },
 ];
 
@@ -1083,6 +1096,12 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // (Turning the view is app-controlled — the keyboard bindings only move
       // world.player along the camera's forward direction.)
       browserControls: true,
+      // Comfort for young, likely first-time VR users (Phase 4.3). IWSDK already
+      // DEFAULTS to snap turning (TurningMethod.SnapTurn) — never smooth
+      // artificial rotation, which causes nausea — and teleport is available, so
+      // we keep those defaults. Here we just turn the comfort vignette up during
+      // slide movement to further reduce motion discomfort.
+      comfortAssistLevel: 1,
     },
     grabbing: true,
     physics: true,
@@ -1304,8 +1323,76 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   function consumePress(entity: any) {
     if (entity && entity.hasComponent(Pressed)) {
       entity.removeComponent(Pressed);
+      lastInteractionTime = performance.now(); // any click resets the idle timer
     }
   }
+
+  // --------------------------------------------------------------------------
+  // IDLE NUDGE (Phase 4.2) — if the student hasn't interacted for a while and
+  // there's a current objective, re-pop the objective (with a gentle chime) to
+  // draw their eye back to "what do I do now?". Fires at most once per beat.
+  // --------------------------------------------------------------------------
+  function checkIdleNudge() {
+    if (gamePaused || idleNudgedThisBeat || !currentObjective) return;
+    if (performance.now() - lastInteractionTime < IDLE_NUDGE_MS) return;
+    idleNudgedThisBeat = true;
+    setObjective(currentObjective); // same text: re-runs the pop, keeps the flag
+    sfxClick(); // a soft "hey, over here" cue
+  }
+  addWatcher(checkIdleNudge);
+
+  // --------------------------------------------------------------------------
+  // PAUSE ON FOCUS LOSS (Phase 4.3) — when the student takes the headset off
+  // (XR "visible-blurred"/"hidden") or hides the browser tab, freeze the timed
+  // animations (crop growth) and the idle nudge so nothing advances while they
+  // aren't looking. Animation loops check `gamePaused` and simply skip a tick.
+  // --------------------------------------------------------------------------
+  let gamePaused = false;
+  function setPaused(paused: boolean) {
+    if (paused === gamePaused) return;
+    gamePaused = paused;
+    // While paused, treat "now" as the last interaction so the idle timer
+    // doesn't sprint ahead and nudge the instant the student returns.
+    if (!paused) lastInteractionTime = performance.now();
+    console.log("[visibility] game " + (paused ? "paused" : "resumed"));
+  }
+  // XR headset focus: blurred (menu/removed) or hidden pauses the game.
+  world.visibilityState.subscribe((state: VisibilityState) => {
+    setPaused(
+      state === VisibilityState.VisibleBlurred ||
+        state === VisibilityState.Hidden,
+    );
+  });
+  // Browser tab hidden (only relevant in non-immersive mode; XR is above).
+  document.addEventListener("visibilitychange", () => {
+    if (world.visibilityState.peek() === VisibilityState.NonImmersive) {
+      setPaused(document.hidden);
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // HOVER AFFORDANCE (Phase 4.2) — every registered clickable gently pops a
+  // little bigger while a ray/pointer is over it, so students can SEE what's
+  // tappable instead of guessing. makeHoverable() records the card's normal
+  // scale; one watcher lerps each card toward (hovered ? 1.08x : 1x) its base.
+  // --------------------------------------------------------------------------
+  const hoverables: { entity: any; base: number }[] = [];
+  function makeHoverable(entity: any) {
+    if (!entity || !entity.object3D) return entity;
+    hoverables.push({ entity, base: entity.object3D.scale.x || 1 });
+    return entity;
+  }
+  function watchHovers() {
+    for (const h of hoverables) {
+      const obj = h.entity.object3D;
+      if (!obj || !obj.visible) continue;
+      const target = h.entity.hasComponent(Hovered) ? h.base * 1.08 : h.base;
+      // Ease toward the target so the pop is smooth, not a snap.
+      const next = obj.scale.x + (target - obj.scale.x) * 0.25;
+      obj.scale.setScalar(next);
+    }
+  }
+  addWatcher(watchHovers);
 
   // --------------------------------------------------------------------------
   // makeBox(): the shared box builder the game logic uses for its props
@@ -1586,7 +1673,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   welcomePanel.object3D!.visible = false;
 
   // How many tutorial steps there are (the text for each lives in welcome.uikitml).
-  const WELCOME_STEPS = 5;
+  const WELCOME_STEPS = 6; // step 6 is the historical-framing note (Phase 4.4)
   let welcomeStep = 1; // which step is currently showing (1..WELCOME_STEPS)
 
   // Wire up the tutorial once the panel's UI document has loaded.
@@ -1895,6 +1982,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       }
 
       growthTimer = setInterval(() => {
+        if (gamePaused) return; // freeze growth while the headset is off (4.3)
         elapsed += stepMs;
         const progress = Math.min(elapsed / durationMs, 1); // climbs 0 -> 1
         const scaleY = startScale + (endScale - startScale) * progress;
@@ -2000,7 +2088,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       if (s1HasNote) {
         s1Blocks.push({
           text: market.supplyHeadline,
-          fontPx: 19,
+          fontPx: 22,
           color: "#6b4f2a",
         });
       }
@@ -2080,6 +2168,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         true, // unlit so the card stays bright and readable
       );
       sellCard.addComponent(RayInteractable); // clickable by mouse / controller ray
+      makeHoverable(sellCard);
       marketEntities.push(sellCard);
       // The card's text sits just in front of the card box (text planes are not
       // interactable, so they never block the ray from reaching the card box).
@@ -2109,6 +2198,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         true,
       );
       holdCard.addComponent(RayInteractable);
+      makeHoverable(holdCard);
       marketEntities.push(holdCard);
       const holdText = makeMarketTextPlane(
         [
@@ -2634,7 +2724,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // Scarce corn sells for MORE. The price change itself is applied once by
       // the market model (applySeason2Event); here we just tell the story.
       samuelSpeak(
-        "Bad news, friend. A fierce drought dried the fields. 🌞 There's only HALF the usual corn this year. Hmm… what do you think that does to corn's price?",
+        "A drought dried the fields. 🌞 There's only HALF the usual corn this year. What do you think that does to its price?",
       );
     }
 
@@ -2659,7 +2749,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // The cotton price rise is applied once by the market model
       // (applySeason2Event); here we just let Samuel share the good word.
       samuelSpeak(
-        "Word from the docks — England wants all the cotton we can grow! ☁️ Ships are waiting. If you planted cotton, this is your moment!",
+        "Word from the docks — England wants all our cotton! ☁️ If you planted cotton, this is your moment!",
       );
     }
 
@@ -2747,7 +2837,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       if (s2HasNote) {
         s2Blocks.push({
           text: market.supplyHeadline,
-          fontPx: 19,
+          fontPx: 22,
           color: "#6b4f2a",
         });
       }
@@ -2848,6 +2938,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
           true,
         );
         card.addComponent(RayInteractable);
+        makeHoverable(card);
         s2WorldEntities.push(card);
 
         // The text sits just in front of the card box. Text planes aren't
@@ -2855,7 +2946,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         const label = makeS2TextPlane(
           [
             { text: title, bold: true, fontPx: 30 },
-            { text: body, fontPx: 20 },
+            { text: body, fontPx: 22 },
           ],
           0.46,
           0.74,
@@ -3403,7 +3494,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       if (s3HasNote) {
         s3Blocks.push({
           text: market.supplyHeadline,
-          fontPx: 19,
+          fontPx: 22,
           color: "#6b4f2a",
         });
       }
@@ -3438,6 +3529,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       const tickMs = 50; // update ~20 times per second
       let elapsed = 0;
       const growTimer = setInterval(() => {
+        if (gamePaused) return; // freeze growth while the headset is off (4.3)
         elapsed += tickMs;
         const t = Math.min(elapsed / growDurationMs, 1); // progress 0 -> 1
         for (let i = 0; i < grown.length; i++) {
@@ -3524,6 +3616,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
           true, // unlit so the card stays bright and readable
         );
         card.addComponent(RayInteractable); // makes the box clickable by ray/pointer
+        makeHoverable(card);
         card.onSelect = onSelect; // the action this card runs when chosen
         s3WorldEntities.push(card);
         s3CorkboardEntities.push(card);
@@ -3532,7 +3625,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         const label = makeS3TextPlane(
           [
             { text: title, bold: true, fontPx: 28 },
-            { text: body, fontPx: 20 },
+            { text: body, fontPx: 22 },
           ],
           0.58,
           0.74,
@@ -3938,6 +4031,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   });
   playAgainButton.object3D!.position.set(0, -0.86, 0.006);
   playAgainButton.addComponent(RayInteractable);
+  makeHoverable(playAgainButton);
 
   // The button's text label sits just in front of the gold rectangle.
   const buttonLabel = makeTextPlane(0.7, 0.12, 0, -0.86, {
@@ -4630,6 +4724,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     ) {
       const card = makeBox(0.66, 0.6, 0.04, "#fdf3dd", [x, 1.35, -5.35], true);
       card.addComponent(RayInteractable);
+      makeHoverable(card);
       quizEntities.push(card);
       const title3d = makeSamuelTextPlane(0.6, 0.3, {
         fontPx: 52,
@@ -4778,6 +4873,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // Mark it as a ray target so the mouse pointer / XR ray can click it. The
     // Pressed tag (watched in the frame loop below) drives the plant action.
     bag.addComponent(RayInteractable);
+    makeHoverable(bag);
 
     // The crop's name/price/risk label, parented to the card so it shows/hides
     // with it. Navy text reads clearly on every crop color.
@@ -4905,6 +5001,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     card.object3D!.position.set(FARM_SIZE_XS[i], 1.5, -0.9);
     card.sizeKey = def.key; // which size this card picks
     card.addComponent(RayInteractable);
+    makeHoverable(card);
 
     // Title (size name), the plot count (big), and the tradeoff tagline (small).
     // All three are parented to the card and let rays pass through to it.
@@ -4929,7 +5026,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     (plots.entity.object3D as any).pointerEvents = "none";
 
     const tag = makeSamuelTextPlane(1.34, 0.28, {
-      fontPx: 15,
+      fontPx: 18,
       color: "#4a4a4a",
       parent: card,
     });
@@ -5378,6 +5475,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   });
   nbPlayAgain.object3D!.position.set(0, 0.06, 0.06);
   nbPlayAgain.addComponent(RayInteractable);
+  makeHoverable(nbPlayAgain);
   const nbBtnLabel = boardText(0.06, 0.9, 0.14, "🔁 Play Again", {
     fontPx: 30,
     color: "#1F3A5F",
@@ -5402,7 +5500,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // A small cream board lifted to ~1.35 m (just above the fence posts).
     const sign = makeBox(0.9, 0.7, 0.05, "#f3e9d2", [sx, 1.35, fenceZ], true);
     const q = makeSamuelTextPlane(0.86, 0.66, {
-      fontPx: 20,
+      fontPx: 22,
       color: "#1F3A5F",
       bold: true,
       parent: sign,
