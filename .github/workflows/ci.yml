@@ -1,0 +1,26 @@
+name: CI
+
+# Type-checks the project and runs the headless playthrough simulator
+# (Phase 5.3): it verifies the rank distribution stays balanced and that
+# smart play still beats random play on Adaptability. The sim exits non-zero
+# if either check regresses, failing the build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Simulate playthroughs (rank balance + smart-vs-random)
+        run: npx tsx scripts/simulate.ts

@@ -11,7 +11,10 @@
     "reference:status": "iwsdk reference status",
     "reference:warmup": "iwsdk reference warmup",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "npx tsc --noEmit",
+    "simulate": "npx tsx scripts/simulate.ts",
+    "test": "npx tsc --noEmit && npx tsx scripts/simulate.ts"
   },
   "dependencies": {
     "@iwsdk/core": "0.4.2",

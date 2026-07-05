@@ -45,6 +45,20 @@ import {
 // their season-by-season history (see src/market.ts, Phase 1.2).
 import { market } from "./market";
 
+// The scoring model: pure, tunable score/rank logic shared with the headless
+// rank-balancing harness (see src/scoring.ts, Phase 3.3 / 5.3).
+import {
+  determineRank as computeRank,
+  revenueScore,
+  s2AdaptabilityDelta,
+  s3ExpandAdaptabilityDelta,
+  holdAdaptabilityDelta,
+  QUIZ_CORRECT_ADAPT,
+  DIVERSIFY_HEALTH,
+  DIVERSIFY_ADAPT,
+  PROTECT_HEALTH,
+} from "./scoring";
+
 // The visual world (sky, lighting, terrain, farmhouse, stall, trees, Samuel's
 // body, and the little crop plant models) lives in its own module so this file
 // can stay focused on game logic. See src/environment.ts.
@@ -339,16 +353,20 @@ let quizzesTotal = 0;
 // The hold-vs-sell counterfactual line, filled in at the final harvest when the
 // student held their Season 1 crops (Phase 3.1). Shown on the report.
 let holdVsSellMsg = "";
+// Per-season coin outcomes for the Year in Review timeline (Phase 2.4).
+let season1Coins = 0; // coins banked from the Season 1 sale (0 if held)
+let season3Coins = 0; // total coins from the final harvest (+ any held sale)
 
 // recomputeRevenueScore(): the Revenue meter is DERIVED from actual coins
 // (Phase 3.2), not nudged by fixed amounts per decision. Coins are normalized
 // per plot (by farm size) so a small farm can reach the same score as a large
 // one. Call this whenever farmRevenue changes.
 function recomputeRevenueScore() {
-  const capacity =
-    farmSize().plotCap * CONSTANTS.REVENUE_SCORE_COINS_PER_PLOT;
-  const pct = capacity > 0 ? (farmRevenue / capacity) * 100 : 0;
-  scoreRevenue = clampScore(Math.round(pct));
+  scoreRevenue = revenueScore(
+    farmRevenue,
+    farmSize().plotCap,
+    CONSTANTS.REVENUE_SCORE_COINS_PER_PLOT,
+  );
   refreshHUD();
 }
 
@@ -593,9 +611,9 @@ let onHudRefresh: (() => void) | null = null;
 function setHudSeason(phase: string) {
   const labels: Record<string, string> = {
     setup: "Getting Ready",
-    season1: "Season 1 of 3",
-    season2: "Season 2 of 3",
-    season3: "Season 3 of 3",
+    season1: "Season 1 · Spring 🌱",
+    season2: "Season 2 · Summer ☀️",
+    season3: "Season 3 · Fall 🍂",
     report: "Year Report!",
   };
   scoreboardSeasonLabel = labels[phase] || phase;
@@ -938,6 +956,14 @@ const PHASE_ORDER = [
 // Tracks which phase the student is on right now. We always start at setup.
 let currentPhase = PHASE_SETUP;
 
+// Pacing instrumentation (Phase 2.3): how long the student spends in each phase,
+// so the team can tune the 30–35 minute target with real data. Logged to the
+// console on each transition and handed to the course in onSimulationComplete.
+const phaseDurations: Record<string, number> = {}; // phase -> seconds spent
+// performance.now() when the current phase began. Initialized at load so the
+// first transition (setup -> season 1) still banks a setup duration.
+let phaseEnterTime = performance.now();
+
 // A lookup table mapping a phase name -> that phase's panel entity. It's empty
 // for now; later steps will register each panel here (e.g. phasePanels[PHASE_SETUP] = ...)
 // so that showPhase() can find the right panel to show or hide.
@@ -945,6 +971,17 @@ const phasePanels: Record<string, any> = {};
 
 // showPhase(phase): switch the visible screen to the given phase.
 function showPhase(phase: string) {
+  // 0. Bank how long we spent in the phase we're leaving (Phase 2.3 pacing).
+  const now = performance.now();
+  if (phaseEnterTime > 0) {
+    const secs = (now - phaseEnterTime) / 1000;
+    phaseDurations[currentPhase] = (phaseDurations[currentPhase] || 0) + secs;
+    console.log(
+      "[pacing] " + currentPhase + " took " + secs.toFixed(1) + "s",
+    );
+  }
+  phaseEnterTime = now;
+
   // 1. Remember the phase we're switching to.
   currentPhase = phase;
 
@@ -1876,7 +1913,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
             growingText.dispose();
             growingText = null;
           }
-          startSeason1Market(); // move on to the market
+          // Tend the crops (water a few plots) before the market opens (2.3).
+          startTending(3, startSeason1Market);
         }
       }, stepMs);
     };
@@ -2102,6 +2140,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         earnings += (BASE_YIELD[crop] || 0) * (market.prices[crop] || 0);
       }
       farmRevenue += earnings; // add to the running farm revenue
+      season1Coins = earnings; // Year in Review (Phase 2.4)
       recomputeRevenueScore(); // Revenue meter follows the actual coins (3.2)
       console.log(
         "Season 1 SELL: earned " + earnings + " coins. Revenue: " + farmRevenue,
@@ -2751,38 +2790,34 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       nextPhase();
     }
 
-    // The three card click handlers, scored by OUTCOME (Phase 3.1).
+    // The three card click handlers, scored by OUTCOME (Phase 3.1). The delta
+    // math lives in src/scoring.ts so the harness scores these identically.
     function onShiftCrops() {
-      // Shifting is SMART when the event gave a real reason to move: the student
-      // was heavily in the crop that crashed, or barely in the one that rose.
-      // Shifting when already well-placed is a needless move — small reward.
-      const downShare = cropShareById(eventDownCrop());
-      const upShare = cropShareById(eventUpCrop());
-      const neededToAdapt =
-        downShare >= 0.34 || (eventUpCrop() !== null && upShare < 0.2);
-      updateScore("adaptability", neededToAdapt ? 15 : 5);
+      const hasUp = eventUpCrop() !== null;
+      const delta = s2AdaptabilityDelta(
+        "shift",
+        cropShareById(eventDownCrop()),
+        cropShareById(eventUpCrop()),
+        hasUp,
+      );
+      updateScore("adaptability", delta);
       finishSeason2("shift");
     }
     function onDoubleDown() {
-      // Sticking is SMART when you hold a good hand (real stake in the rising
-      // crop) and STUBBORN when you cling to the crashing one. Revenue follows
-      // automatically at harvest via the actual coins (Phase 3.2).
-      const downShare = cropShareById(eventDownCrop());
-      const upShare = cropShareById(eventUpCrop());
-      if (downShare >= 0.34) {
-        updateScore("adaptability", -8); // clinging to the crop that's falling
-      } else if (upShare >= 0.34) {
-        updateScore("adaptability", 5); // riding a genuine winner
-      } else {
-        updateScore("adaptability", 2); // a fine, steady plan
-      }
+      const hasUp = eventUpCrop() !== null;
+      const delta = s2AdaptabilityDelta(
+        "doubledown",
+        cropShareById(eventDownCrop()),
+        cropShareById(eventUpCrop()),
+        hasUp,
+      );
+      updateScore("adaptability", delta);
       finishSeason2("doubledown");
     }
     function onDiversify() {
-      // Spreading effort across crops keeps the field healthier and is a sound
-      // hedge when the market is uncertain.
-      updateScore("crophealth", 10);
-      updateScore("adaptability", 3);
+      // Spreading effort keeps the field healthier and is a sensible hedge.
+      updateScore("crophealth", DIVERSIFY_HEALTH);
+      updateScore("adaptability", DIVERSIFY_ADAPT);
       finishSeason2("diversify");
     }
 
@@ -2937,8 +2972,9 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       resetBeat2View(); // prep Beat 2 (hidden until the student advances)
       showSeason2Beat(1); // start on Beat 1 (Samuel's news)
 
-      // Build all the world-space pieces for whichever event was rolled.
-      buildSeason2World();
+      // Tend the crops first (2.3), THEN build the world-space pieces (Samuel's
+      // news gate + the event visuals) for whichever event was rolled.
+      startTending(3, buildSeason2World);
     };
 
     // Clean initial state while the panel is still hidden at startup.
@@ -3165,14 +3201,13 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         // Reward (or gently note) the timing, and craft the message that appears
         // on the report. Never punish holding harshly — the lesson is the point.
         const diff = heldSale - wouldHaveEarnedS1;
+        updateScore("adaptability", holdAdaptabilityDelta(diff));
         if (diff > 0) {
-          updateScore("adaptability", 10);
           holdVsSellMsg =
             "You held your crops. They sold for " +
             diff +
-            " more coins than in Season 1 — patience paid off! (+10 Market Smarts)";
+            " more coins than in Season 1 — patience paid off! 📈";
         } else if (diff < 0) {
-          updateScore("adaptability", -4);
           holdVsSellMsg =
             "You held your crops, but prices fell — selling back in Season 1 would have earned " +
             -diff +
@@ -3188,6 +3223,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       //    recompute the coin-derived Revenue meter (Phase 3.2).
       const seasonEarnings = earnings + heldSale;
       farmRevenue += seasonEarnings;
+      season3Coins = seasonEarnings; // Year in Review (Phase 2.4)
       recomputeRevenueScore();
       console.log(
         "Final harvest: " +
@@ -3527,11 +3563,10 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         }
         // Expanding into rising prices is a shrewd read; into falling prices, a
         // misread. (The coins themselves flow through the Revenue meter.)
-        if (SEASON3_EVENTS[season3Event].priceDelta > 0) {
-          updateScore("adaptability", 8); // grew more just as prices rose
-        } else {
-          updateScore("adaptability", -5); // grew into a falling market
-        }
+        updateScore(
+          "adaptability",
+          s3ExpandAdaptabilityDelta(SEASON3_EVENTS[season3Event].priceDelta > 0),
+        );
 
         hideS3Corkboard();
         triggerHarvest(); // animate the harvest and tally the earnings
@@ -3540,7 +3575,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // PROTECT: invest in the soil for a healthier, steadier finish.
       function onProtectCard() {
         season3Decision = "protect";
-        updateScore("crophealth", 15); // healthier soil and crops
+        updateScore("crophealth", PROTECT_HEALTH); // healthier soil and crops
         hideS3Corkboard();
         triggerHarvest(); // animate the harvest and tally the earnings
       }
@@ -3629,21 +3664,21 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       resetS3Beat2View();
       showSeason3Beat(1);
 
-      // 4. Build the world-space pieces: the updated stall price sign and the
-      //    two final-decision cards on the farmhouse corkboard.
-      buildSeason3World();
-
-      // 5. Route Samuel's second piece of news through his speech bubble. The
-      //    student must walk over to him to read it (proximity reveals it).
-      if (SEASON3_EVENTS[season3Event].name === "New competition") {
-        samuelSpeak(
-          "A colony down south is selling the same crops as us. More sellers means lower prices for everyone. 📉",
-        );
-      } else {
-        samuelSpeak(
-          "Great news! A new trade route just opened to the Caribbean. ⛵ More buyers want Virginia goods — prices are looking up! 📈",
-        );
-      }
+      // 4. Tend the crops first (2.3), THEN build the world-space pieces (stall
+      //    price sign + the two final-decision cards) and route Samuel's second
+      //    piece of news through his speech bubble (proximity reveals it).
+      startTending(3, () => {
+        buildSeason3World();
+        if (SEASON3_EVENTS[season3Event].name === "New competition") {
+          samuelSpeak(
+            "A colony down south is selling the same crops as us. More sellers means lower prices for everyone. 📉",
+          );
+        } else {
+          samuelSpeak(
+            "Great news! A new trade route just opened to the Caribbean. ⛵ More buyers want Virginia goods — prices are looking up! 📈",
+          );
+        }
+      });
     };
 
     // Clean initial state while the panel is still hidden at startup.
@@ -3948,54 +3983,14 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   // check the rules in priority order and return the first one that matches,
   // along with a one-sentence description of what that rank means.
   // --------------------------------------------------------------------------
+  // Thin wrapper over the shared, tunable rank logic in src/scoring.ts, so the
+  // game and the rank-balancing harness rank identical score triples.
   function determineRank(): { name: string; desc: string } {
-    // Quick, adaptable trader who also earned well.
-    if (scoreAdaptability >= 70 && scoreRevenue >= 60) {
-      return {
-        name: "Savvy Merchant",
-        desc: "You watched the market and changed your plan at just the right time. 🧠",
-      };
-    }
-    // Patient grower with healthy crops and steady earnings.
-    if (scoreCropHealth >= 70 && scoreRevenue >= 50) {
-      return {
-        name: "Steady Farmer",
-        desc: "You kept your crops healthy and earned steady coins all year. 🌾",
-      };
-    }
-    // A bold all-in bet on revenue (wins regardless of the other two scores).
-    if (scoreRevenue >= 75) {
-      return {
-        name: "Bold Speculator",
-        desc: "You went for the big win and bet boldly when prices swung. Daring! 🎲",
-      };
-    }
-    // Balanced, middle-of-the-road across all three scores.
-    if (
-      scoreRevenue >= 40 &&
-      scoreRevenue <= 65 &&
-      scoreCropHealth >= 40 &&
-      scoreCropHealth <= 65 &&
-      scoreAdaptability >= 40 &&
-      scoreAdaptability <= 65
-    ) {
-      return {
-        name: "Cautious Grower",
-        desc: "You made balanced choices and stayed clear of big risks. 🛡️",
-      };
-    }
-    // Any score that fell very low (below 35) marks a tough learning year.
-    if (scoreRevenue < 35 || scoreCropHealth < 35 || scoreAdaptability < 35) {
-      return {
-        name: "Learning the Land",
-        desc: "Tough year? Every great farmer grows from one. You'll be back! 🌱",
-      };
-    }
-    // Nothing matched exactly — treat it as a steady, balanced run.
-    return {
-      name: "Cautious Grower",
-      desc: "You made balanced choices and stayed clear of big risks. 🛡️",
-    };
+    return computeRank({
+      revenue: scoreRevenue,
+      crophealth: scoreCropHealth,
+      adaptability: scoreAdaptability,
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -4021,10 +4016,13 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     season3Decision = null;
     farmRevenue = 0;
     heldInventory = [];
-    // Reset the report trackers (Phase 3.1 / 3.4).
+    // Reset the report trackers (Phase 3.1 / 3.4 / 2.4 / 2.3).
     quizzesCorrect = 0;
     quizzesTotal = 0;
     holdVsSellMsg = "";
+    season1Coins = 0;
+    season3Coins = 0;
+    for (const key in phaseDurations) delete phaseDurations[key];
 
     // Recompute the coin-derived Revenue meter (now 0) and push the fresh
     // numbers to the HUD/scoreboard. Doing this AFTER zeroing everything avoids
@@ -4099,35 +4097,37 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     const rank = determineRank();
     currentRank = rank.name;
 
-    // 4. Build the season recap, one bullet per season, from the saved choices
-    //    (season1Decision / season2Decision) and the events that struck
-    //    (season2Event / season3Event).
+    // 4. Build the YEAR IN REVIEW (Phase 2.4): one line per season with the
+    //    decision, the event that struck, and the coin outcome — the student's
+    //    evidence for the written debrief. Kept to one readable line each.
     const s1 =
       season1Decision === "sell"
-        ? "Season 1: You sold your first harvest right away to lock in early coins."
+        ? "Season 1 · Spring: sold your first harvest for " + season1Coins + " coins."
         : season1Decision === "hold"
-          ? "Season 1: You held your harvest, betting prices would climb later on."
-          : "Season 1: You planted and tended your very first crops on the farm.";
+          ? "Season 1 · Spring: held your harvest to sell later in the year."
+          : "Season 1 · Spring: planted and tended your very first crops.";
 
     const event2 = SEASON2_EVENTS[season2Event].name; // e.g. "Summer Drought"
     const response2 =
       season2Decision === "shift"
-        ? "you shifted your plots toward a safer crop"
+        ? "you shifted toward a safer crop"
         : season2Decision === "doubledown"
-          ? "you doubled down and stuck with your plan"
+          ? "you doubled down on your plan"
           : season2Decision === "diversify"
-            ? "you spread your plots out to diversify"
-            : "you weighed your options carefully";
-    const s2 = "Season 2: " + event2 + " struck — " + response2 + ".";
+            ? "you spread out to diversify"
+            : "you weighed your options";
+    const s2 = "Season 2 · Summer: " + event2 + " — " + response2 + ".";
 
     const event3 = SEASON3_EVENTS[season3Event].name; // "New competition" / "New trade route"
     const response3 =
       season3Decision === "expand"
-        ? "you expanded production to grow even more"
+        ? "you expanded to grow more"
         : season3Decision === "protect"
-          ? "you protected your land and invested in healthy soil"
+          ? "you protected your land"
           : "you made your final call";
-    const s3 = "Season 3: " + event3 + " arrived — " + response3 + ".";
+    const s3 =
+      "Season 3 · Fall: " + event3 + " — " + response3 +
+      ". Harvest: " + season3Coins + " coins.";
 
     // 5. Fill in the world-space notice board and reveal the reflection signs,
     //    then slide the board up out of the ground and animate its score bars.
@@ -4136,8 +4136,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     showReportBoard(rank, s1, s2, s3);
 
     // 6. Fire the completion event the course shell (Rise) listens for, handing
-    //    over the final scores and the rank the student earned. We also log it so
-    //    the event is visible in the console for anyone wiring up the course.
+    //    over the final scores, rank, coins, quiz results, a structured Year in
+    //    Review, and per-phase durations. Logged so it's visible in the console.
     const completionDetail = {
       scoreRevenue: scoreRevenue,
       scoreCropHealth: scoreCropHealth,
@@ -4149,6 +4149,16 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       farmSize: farmSizeKey,
       marketPredictionsCorrect: quizzesCorrect,
       marketPredictionsTotal: quizzesTotal,
+      // Phase 2.4: the season-by-season timeline (decision + event + outcome).
+      yearInReview: [
+        { season: 1, phase: "Spring", event: "Planting", decision: season1Decision, coins: season1Coins },
+        { season: 2, phase: "Summer", event: event2, decision: season2Decision },
+        { season: 3, phase: "Fall", event: event3, decision: season3Decision, coins: season3Coins },
+      ],
+      // Phase 2.3: how long the student spent in each phase (seconds), rounded.
+      phaseDurationsSec: Object.fromEntries(
+        Object.entries(phaseDurations).map(([k, v]) => [k, Math.round(v)]),
+      ),
     };
     console.log("[EVENT] onSimulationComplete", completionDetail);
     window.dispatchEvent(
@@ -4648,7 +4658,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       quizzesTotal++;
       if (correct) {
         quizzesCorrect++;
-        updateScore("adaptability", 5); // Market Smarts reward (+ coin sound)
+        updateScore("adaptability", QUIZ_CORRECT_ADAPT); // Market Smarts reward
       } else {
         sfxDown(); // a gentle "not quite" — no points lost
       }
@@ -5118,6 +5128,79 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // Move on to Season 1.
     nextPhase();
   }
+
+  // ==========================================================================
+  // TENDING INTERACTION (Phase 2.3) — a short "water your crops" step that gates
+  // each season's market, so a fast student can't click through in minutes. The
+  // field plots become tappable; watering `need` of them opens the next step.
+  // Reuses the exact RayInteractable + Pressed rising-edge pattern as the crop
+  // buttons, so it works the same in the browser and in a headset.
+  // ==========================================================================
+  let tendingActive = false;
+  let tendingNeed = 0;
+  let tendingOnDone: (() => void) | null = null;
+  const tendedPlots = new Set<any>();
+
+  // startTending(count, onDone): begin the watering step. If nothing is planted
+  // (a safety case) it just proceeds. Otherwise the student must water `count`
+  // plots (capped at how many are planted) before onDone runs.
+  function startTending(count: number, onDone: () => void) {
+    const planted = fieldPlots.filter((p: any) => p.cropType);
+    const need = Math.min(count, planted.length);
+    if (need <= 0) {
+      onDone();
+      return;
+    }
+    tendedPlots.clear();
+    tendingNeed = need;
+    tendingOnDone = onDone;
+    tendingActive = true;
+    for (const plot of fieldPlots) {
+      if (!plot.hasComponent(RayInteractable)) plot.addComponent(RayInteractable);
+    }
+    spawnBanner("💧 Tend Your Crops");
+    sfxSeason();
+    setObjective("💧 Water your crops — tap " + need + " plots to water them!");
+  }
+
+  // finishTending(): stop watching, make the plots un-clickable again, and run
+  // the queued next step exactly once.
+  function finishTending() {
+    tendingActive = false;
+    for (const plot of fieldPlots) {
+      if (plot.hasComponent(RayInteractable)) plot.removeComponent(RayInteractable);
+    }
+    const cb = tendingOnDone;
+    tendingOnDone = null;
+    if (cb) cb();
+  }
+
+  // Watch loop: each tapped plot gets watered once (a little "grew from the
+  // water" bump + a plop), and the objective counts down to zero.
+  function watchTendingPlots() {
+    if (!tendingActive) return;
+    for (const plot of fieldPlots) {
+      if (plot.hasComponent(Pressed)) {
+        consumePress(plot);
+        if (!tendedPlots.has(plot)) {
+          tendedPlots.add(plot);
+          if (plot.sproutEntity) {
+            plot.sproutEntity.object3D!.scale.multiplyScalar(1.12);
+          }
+          sfxPlant();
+          const left = tendingNeed - tendedPlots.size;
+          if (left > 0) {
+            setObjective(
+              "💧 Keep watering! " + left + " plot" + (left === 1 ? "" : "s") + " to go",
+            );
+          } else {
+            finishTending();
+          }
+        }
+      }
+    }
+  }
+  addWatcher(watchTendingPlots);
 
   // --------------------------------------------------------------------------
   // Per-frame loop for the setup phase. It watches two things using the same
