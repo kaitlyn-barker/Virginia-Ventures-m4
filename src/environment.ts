@@ -697,7 +697,10 @@ function buildFarmhouse(world: World) {
 // FENCE — post-and-double-rail fence wrapping the crop field, with a gate gap
 // at the front center. The front rail line sits exactly on the game's fenceZ.
 // ----------------------------------------------------------------------------
-function buildFence(world: World, fenceZ: number, fieldCenterZ: number) {
+// buildFence(): the front line sits on fenceZ; the side rails run back to backZ.
+// Exported so index.ts can rebuild it at a new depth when the farm size changes
+// (a smaller farm has fewer plot rows, so its fence is shorter front-to-back).
+export function buildFence(world: World, fenceZ: number, backZ: number) {
   const fence = new Group();
   const POST_H = 0.85;
   const RAIL_T = 0.06;
@@ -722,7 +725,7 @@ function buildFence(world: World, fenceZ: number, fieldCenterZ: number) {
 
   const LEFT = -2.6;
   const RIGHT = 2.6;
-  const BACK = fieldCenterZ - 2.0; // behind the last plot row
+  const BACK = backZ; // behind the last plot row (varies with farm size)
   const GATE_HALF = 0.55; // half-width of the front gate opening
 
   // Front line (with gate gap at the middle).
@@ -1327,12 +1330,18 @@ export function buildSamuel(world: World, x: number, z: number) {
 // ----------------------------------------------------------------------------
 export function buildEnvironment(
   world: World,
-  layout: { fieldCenterZ: number; fenceZ: number; stallX: number; stallZ: number },
+  layout: {
+    fieldCenterZ: number;
+    fenceZ: number;
+    fenceBackZ: number;
+    stallX: number;
+    stallZ: number;
+  },
 ) {
   buildSkyAndLights(world);
   const ground = buildTerrain(world, layout.fieldCenterZ);
   buildFarmhouse(world);
-  buildFence(world, layout.fenceZ, layout.fieldCenterZ);
+  const fence = buildFence(world, layout.fenceZ, layout.fenceBackZ);
   buildStall(world, layout.stallX, layout.stallZ);
   buildVegetation(world);
   buildScarecrow(world, -2.95, -4.6);
@@ -1351,5 +1360,5 @@ export function buildEnvironment(
   }
   setInterval(ambientLoop, 33);
 
-  return { ground };
+  return { ground, fence };
 }

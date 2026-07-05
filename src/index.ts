@@ -50,6 +50,7 @@ import { market } from "./market";
 // can stay focused on game logic. See src/environment.ts.
 import {
   buildEnvironment,
+  buildFence, // rebuilt when the farm size changes (see FARM_SIZES)
   buildSamuel,
   makeCropPlant,
   getFurrowTexture,
@@ -103,6 +104,70 @@ const CONSTANTS = {
   // NPC name
   NPC_NAME: "Samuel",
 };
+
+// ============================================================================
+// FARM SIZES (Phase 2.1) — the student picks one before planting
+// ----------------------------------------------------------------------------
+// Each size drives EVERYTHING about the farm: how many plots the field has (and
+// therefore how big the field + fence look), a starting crop-health bonus, a
+// per-season coin upkeep, and how far Season 3 can expand. These are the single
+// source of truth — no more scattered 12 / 16 / 20 magic numbers.
+//   plotCap  = number of plots in the field (must be planted to begin)
+//   rows     = plot rows (× 4 columns) = plotCap / 4, drives the field geometry
+//   upkeep   = coins charged at the start of Seasons 2 and 3 (opportunity cost)
+//   healthBonus = crop-health added at the start (small farms tend the land better)
+//   expandCap   = the most plots Season 3 expansion can reach (plotCap + 4)
+// ============================================================================
+type FarmSizeKey = "small" | "medium" | "large";
+interface FarmSizeInfo {
+  key: FarmSizeKey;
+  label: string;
+  plotCap: number;
+  rows: number;
+  upkeep: number;
+  healthBonus: number;
+  expandCap: number;
+  tagline: string;
+}
+const FARM_SIZES: Record<FarmSizeKey, FarmSizeInfo> = {
+  small: {
+    key: "small",
+    label: "Small Farm",
+    plotCap: 8,
+    rows: 2,
+    upkeep: 0,
+    healthBonus: 10,
+    expandCap: 12,
+    tagline: "No upkeep · healthier soil 🌱",
+  },
+  medium: {
+    key: "medium",
+    label: "Medium Farm",
+    plotCap: 12,
+    rows: 3,
+    upkeep: 0,
+    healthBonus: 0,
+    expandCap: 16,
+    tagline: "Balanced · a solid first farm",
+  },
+  large: {
+    key: "large",
+    label: "Large Farm",
+    plotCap: 16,
+    rows: 4,
+    upkeep: 3,
+    healthBonus: 0,
+    expandCap: 20,
+    tagline: "More land · costs 3 coins/season",
+  },
+};
+// Which size the student chose this playthrough. Defaults to medium (the
+// balanced middle) until they pick one on the farm-setup step.
+let farmSizeKey: FarmSizeKey = "medium";
+// Convenience getter for the chosen size's data.
+function farmSize(): FarmSizeInfo {
+  return FARM_SIZES[farmSizeKey];
+}
 
 // Roll which Season 2 market event happens (0=Drought, 1=Cotton surge,
 // 2=Tobacco oversupply). Called once at startup AND again on every "Play Again",
@@ -1119,7 +1184,17 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   const PLOT_GAP = 0.1; // gap between neighboring plots
   const PLOT_PITCH = PLOT_SIZE + PLOT_GAP; // center-to-center spacing (0.9)
   const FIELD_CENTER_Z = -3; // ~3 units in front of the farmhouse at z = -6
-  const fenceZ = FIELD_CENTER_Z + 1.5 * PLOT_PITCH + 0.4; // just past the front row
+  // The field is FRONT-anchored: the front row (nearest the gate/player) always
+  // sits here, and smaller farms simply have fewer rows extending back toward the
+  // house. That keeps the gate, the confirm button, and the front fence fixed for
+  // every farm size — only the field's depth (and the fence's back) changes.
+  const FIELD_FRONT_Z = FIELD_CENTER_Z + 1.5 * PLOT_PITCH; // front row (-1.65)
+  const fenceZ = FIELD_FRONT_Z + 0.4; // front fence line, just past the front row
+  const FENCE_BACK_MARGIN = 0.65; // gap between the last plot row and the back fence
+  // Where the back fence sits for a field of `rows` rows (a 4-row/16-plot field
+  // lands at the original z = -5.0, so the large farm looks exactly as before).
+  const fenceBackFor = (rows: number) =>
+    FIELD_FRONT_Z - (rows - 1) * PLOT_PITCH - FENCE_BACK_MARGIN;
   const STALL_X = 8; // 8 units right of the farmhouse (which is at x = 0)
   const STALL_Z = -6; // on the dirt path, level with the farmhouse
   const samuelStallPosition: [number, number, number] = [STALL_X, 0, STALL_Z];
@@ -1129,14 +1204,24 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   const PLOT_FALLOW_COLOR = "#c4a878"; // end-of-year fallow straw
 
   // Build the whole visual world. It hands back the walkable ground entity so
-  // we can mark it for locomotion (the player stands and walks on it).
-  const { ground } = buildEnvironment(world, {
+  // we can mark it for locomotion (the player stands and walks on it), plus the
+  // fence entity so we can rebuild it at a new depth when the farm size changes.
+  const { ground, fence } = buildEnvironment(world, {
     fieldCenterZ: FIELD_CENTER_Z,
     fenceZ,
+    fenceBackZ: fenceBackFor(farmSize().rows),
     stallX: STALL_X,
     stallZ: STALL_Z,
   });
   ground.addComponent(LocomotionEnvironment, { type: EnvironmentType.STATIC });
+  // The current fence entity (swapped out by resizeFence when the size changes).
+  let fenceEntity = fence;
+
+  // resizeFence(rows): rebuild the fence to wrap a field of `rows` rows.
+  function resizeFence(rows: number) {
+    fenceEntity.dispose();
+    fenceEntity = buildFence(world, fenceZ, fenceBackFor(rows));
+  }
 
   // --------------------------------------------------------------------------
   // consumePress(): remove the Pressed tag from an entity after a watcher has
@@ -1180,30 +1265,81 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   }
 
   // --------------------------------------------------------------------------
-  // CROP FIELD: a 4x4 grid of 16 plots, now textured with furrow ridges. The
+  // CROP FIELD: a grid of `rows` × 4 plots, textured with furrow ridges. The
   // texture is grayscale, so the material's color keeps tinting it — planting
   // recolors a plot to the crop's color, year-end turns it fallow, and replay
-  // resets it to tilled soil, exactly like before.
+  // resets it to tilled soil. The row count comes from the chosen farm size, so
+  // an 8-plot Small farm is visibly shorter than a 16-plot Large one.
   // --------------------------------------------------------------------------
-  const fieldPlots: any[] = []; // holds all 16 crop-plot entities
-  for (let row = 0; row < 4; row++) {
-    for (let col = 0; col < 4; col++) {
-      // Spread the 4x4 grid evenly around its center point.
-      const x = (col - 1.5) * PLOT_PITCH;
-      const z = FIELD_CENTER_Z + (row - 1.5) * PLOT_PITCH;
-      // y = 0.045 lifts the 0.09-tall tile so it reads as a raised soil bed.
-      // Typed as `any` so we can attach our own `cropType` tag to the entity.
-      const plot: any = makeBox(PLOT_SIZE, 0.09, PLOT_SIZE, PLOT_SOIL_COLOR, [
-        x,
-        0.045,
-        z,
-      ]);
-      const plotMaterial = (plot.object3D as Mesh).material as MeshBasicMaterial;
-      plotMaterial.map = getFurrowTexture();
-      plotMaterial.needsUpdate = true;
-      plot.cropType = null; // nothing planted here yet
-      fieldPlots.push(plot);
+  const FIELD_COLS = 4; // every farm size is 4 plots wide; size changes the depth
+  const fieldPlots: any[] = []; // holds the current farm's crop-plot entities
+
+  // buildField(rows): (re)build the field to `rows` rows of FIELD_COLS plots.
+  // Disposes any existing plots first (frees their GPU memory), so it is safe to
+  // call again when the student picks a different farm size or replays.
+  function buildField(rows: number) {
+    for (const old of fieldPlots) {
+      if (old.sproutEntity) old.sproutEntity.dispose();
+      old.dispose();
     }
+    fieldPlots.length = 0;
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < FIELD_COLS; col++) {
+        // Center the columns; anchor the front row at FIELD_FRONT_Z and extend
+        // rows backward, so the gate/front stay put for every size.
+        const x = (col - (FIELD_COLS - 1) / 2) * PLOT_PITCH;
+        const z = FIELD_FRONT_Z - row * PLOT_PITCH;
+        // y = 0.045 lifts the 0.09-tall tile so it reads as a raised soil bed.
+        // Typed as `any` so we can attach our own `cropType` tag to the entity.
+        const plot: any = makeBox(PLOT_SIZE, 0.09, PLOT_SIZE, PLOT_SOIL_COLOR, [
+          x,
+          0.045,
+          z,
+        ]);
+        const plotMat = (plot.object3D as Mesh).material as MeshBasicMaterial;
+        plotMat.map = getFurrowTexture();
+        plotMat.needsUpdate = true;
+        plot.cropType = null; // nothing planted here yet
+        fieldPlots.push(plot);
+      }
+    }
+  }
+  // Build the starting field for the default farm size.
+  buildField(farmSize().rows);
+
+  // applyFarmSize(key): lock in the student's chosen size — rebuild the field and
+  // fence to match, and apply the size's starting crop-health bonus. Called from
+  // the farm-setup step before planting begins.
+  function applyFarmSize(key: FarmSizeKey) {
+    farmSizeKey = key;
+    const size = FARM_SIZES[key];
+    buildField(size.rows);
+    resizeFence(size.rows);
+    // Crop-health starting bonus. Set from the base every time so re-choosing a
+    // size (or replaying) never stacks the bonus.
+    scoreCropHealth = Math.min(
+      CONSTANTS.SCORE_MAX,
+      CONSTANTS.CROP_HEALTH_START + size.healthBonus,
+    );
+    refreshHUD();
+    console.log(
+      `[farm-size] ${size.label}: ${size.plotCap} plots, +${size.healthBonus} health, ` +
+        `${size.upkeep} upkeep/season, expand cap ${size.expandCap}`,
+    );
+  }
+
+  // chargeUpkeep(seasonLabel): deduct the farm's per-season upkeep (Large farms
+  // only) from the coin total and show it in the HUD. Charged at the start of
+  // Seasons 2 and 3 so bigger farms carry a real opportunity cost.
+  function chargeUpkeep(seasonLabel: string) {
+    const up = farmSize().upkeep;
+    if (up <= 0) return;
+    farmRevenue = Math.max(0, farmRevenue - up);
+    refreshHUD();
+    spawnScorePopup("-" + up + " 🪙 farm upkeep", "#b3402e");
+    console.log(
+      `[upkeep] ${seasonLabel}: -${up} coins (${farmSize().label}). Coins now ${farmRevenue}`,
+    );
   }
 
   // ==========================================================================
@@ -2683,6 +2819,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     onEnterSeason2 = () => {
       season2Decision = null; // clear any previous choice
       applySeason2Event(); // bake the event into market.prices/market.yields
+      chargeUpkeep("Season 2"); // Large farms pay upkeep each season
 
       // Hide the flat Season 2 panel — this season now plays out in the 3D
       // world (field effects, the stall price sign, and the wall corkboard).
@@ -2848,19 +2985,18 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     }
 
     // ----- Option 1: EXPAND PRODUCTION -------------------------------------
-    // The student grows their farm by up to 3 more plots (capped at 12 total),
-    // betting on volume. The reward depends on whether prices rose or fell.
+    // The student grows their farm by up to 3 more plots (up to the farm size's
+    // expand cap), betting on volume. The reward depends on whether prices moved.
     function expandProduction() {
       season3Decision = "expand";
 
       // Hand out up to 3 extra plots, one at a time, spread across the crops the
-      // student already grows — but never push the farm past the 12-plot cap.
+      // student already grows — but never past this farm size's expand cap
+      // (plotCap + 4: expanding rents a little extra land beyond the field).
       let plotsToAdd = 3;
-      // Cap 20, not 12: the field itself holds 16 plots now (every plot must
-      // be planted), so expanding rents extra land beyond the visible field.
-      while (plotsToAdd > 0 && totalPlots() < 20 && selectedCrops.length > 0) {
+      while (plotsToAdd > 0 && totalPlots() < farmSize().expandCap && selectedCrops.length > 0) {
         for (const name of selectedCrops) {
-          if (plotsToAdd <= 0 || totalPlots() >= 20) break;
+          if (plotsToAdd <= 0 || totalPlots() >= farmSize().expandCap) break;
           plotCounts[name] = (plotCounts[name] || 0) + 1;
           plotsToAdd--;
         }
@@ -3226,16 +3362,17 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
 
       // ----- The two final-decision actions ---------------------------------
       // EXPAND: reuse the existing expand scoring exactly — hand out up to 3
-      // extra plots (capped at 12 total) and reward/punish by the price swing.
+      // extra plots (up to this farm size's expand cap) and reward/punish by the
+      // price swing.
       function onExpandCard() {
         season3Decision = "expand";
 
-        // Hand out up to 3 extra plots across the crops already grown (cap 12).
+        // Hand out up to 3 extra plots across the crops already grown, up to the
+        // farm size's expand cap (see the matching note in expandProduction).
         let plotsToAdd = 3;
-        // Cap 20, not 12 — see the matching note in the flat-panel handler.
-        while (plotsToAdd > 0 && totalPlots() < 20 && selectedCrops.length > 0) {
+        while (plotsToAdd > 0 && totalPlots() < farmSize().expandCap && selectedCrops.length > 0) {
           for (const name of selectedCrops) {
-            if (plotsToAdd <= 0 || totalPlots() >= 20) break;
+            if (plotsToAdd <= 0 || totalPlots() >= farmSize().expandCap) break;
             plotCounts[name] = (plotCounts[name] || 0) + 1;
             plotsToAdd--;
           }
@@ -3328,6 +3465,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // ------------------------------------------------------------------------
     onEnterSeason3 = () => {
       season3Decision = null; // clear any previous choice
+      chargeUpkeep("Season 3"); // Large farms pay upkeep each season
 
       // 1. Hide the flat Season 3 panel — this season now plays out in the world.
       season3Panel.object3D!.visible = false;
@@ -4569,19 +4707,119 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   // Hidden at startup alongside the shelf and bags.
   instructionSign.object3D!.visible = false;
 
-  // Now that the setup props exist, give the welcome tutorial a way to reveal
-  // them. finishWelcome() (up in the welcome-panel block) calls this when the
-  // student presses "Start Farming". The confirm button appears right away in
-  // its LOCKED state ("🔒 Plant every plot! 0 / 16") so the goal is clear.
-  revealFarmSetup = () => {
+  // --------------------------------------------------------------------------
+  // FARM-SIZE CHOICE (Phase 2.1) — three clickable cards shown BEFORE planting.
+  // Picking one sizes the whole farm (field, fence, upkeep, starting health).
+  // Built the same way as the crop buttons: a tinted plane + labels + a ray
+  // target, clicked via the Pressed tag (watched in seedFrameLoop below).
+  // --------------------------------------------------------------------------
+  const FARM_SIZE_CARD_DEFS: { key: FarmSizeKey; color: string }[] = [
+    { key: "small", color: "#dcefd2" }, // light green
+    { key: "medium", color: "#f6e6c4" }, // light gold
+    { key: "large", color: "#d7e6f5" }, // light blue
+  ];
+  const FARM_SIZE_XS = [-1.55, 0, 1.55]; // three cards spread across the gate
+  const farmSizeCards: any[] = [];
+  for (let i = 0; i < FARM_SIZE_CARD_DEFS.length; i++) {
+    const def = FARM_SIZE_CARD_DEFS[i];
+    const info = FARM_SIZES[def.key];
+    const cardMesh = new Mesh(
+      new PlaneGeometry(1.4, 0.82),
+      new MeshBasicMaterial({ color: new Color(def.color), side: DoubleSide }),
+    );
+    const card: any = world.createTransformEntity(cardMesh);
+    card.object3D!.position.set(FARM_SIZE_XS[i], 1.5, -0.9);
+    card.sizeKey = def.key; // which size this card picks
+    card.addComponent(RayInteractable);
+
+    // Title (size name), the plot count (big), and the tradeoff tagline (small).
+    // All three are parented to the card and let rays pass through to it.
+    const title = makeSamuelTextPlane(1.34, 0.24, {
+      fontPx: 30,
+      color: "#1F3A5F",
+      bold: true,
+      parent: card,
+    });
+    title.entity.object3D!.position.set(0, 0.24, 0.01);
+    title.setText(info.label);
+    (title.entity.object3D as any).pointerEvents = "none";
+
+    const plots = makeSamuelTextPlane(1.34, 0.22, {
+      fontPx: 26,
+      color: "#8a5a1a",
+      bold: true,
+      parent: card,
+    });
+    plots.entity.object3D!.position.set(0, 0.0, 0.01);
+    plots.setText(info.plotCap + " plots");
+    (plots.entity.object3D as any).pointerEvents = "none";
+
+    const tag = makeSamuelTextPlane(1.34, 0.28, {
+      fontPx: 15,
+      color: "#4a4a4a",
+      parent: card,
+    });
+    tag.entity.object3D!.position.set(0, -0.26, 0.01);
+    tag.setText(info.tagline);
+    (tag.entity.object3D as any).pointerEvents = "none";
+
+    card.object3D!.visible = false; // shown by showFarmSizeChoice()
+    farmSizeCards.push(card);
+  }
+
+  // A heading ribbon above the three size cards.
+  const farmSizeHeading = makeSamuelTextPlane(2.6, 0.4, {
+    fontPx: 34,
+    color: "#ffe9b0",
+    bgColor: "rgba(31, 58, 95, 0.9)",
+    bold: true,
+  });
+  farmSizeHeading.entity.object3D!.position.set(0, 2.15, -0.9);
+  farmSizeHeading.setText("🚜 Pick your farm size");
+  farmSizeHeading.entity.object3D!.visible = false;
+
+  // showFarmSizeChoice(): the FIRST setup step — reveal the three size cards and
+  // hide the planting props until a size is chosen.
+  function showFarmSizeChoice() {
+    for (const c of farmSizeCards) c.object3D!.visible = true;
+    farmSizeHeading.entity.object3D!.visible = true;
+    seedShelf.object3D!.visible = false;
+    for (const b of seedBags) b.object3D!.visible = false;
+    instructionSign.object3D!.visible = false;
+    confirmButton.object3D!.visible = false;
+    spawnBanner("🚜 Choose Your Farm");
+    sfxSeason();
+    setObjective("Pick your farm size: Small, Medium, or Large 🚜");
+  }
+
+  // onFarmSizeChosen(key): lock in the size, hide the size cards, and move on to
+  // the planting step.
+  function onFarmSizeChosen(key: FarmSizeKey) {
+    applyFarmSize(key);
+    for (const c of farmSizeCards) c.object3D!.visible = false;
+    farmSizeHeading.entity.object3D!.visible = false;
+    revealSeedPlanting();
+  }
+
+  // revealSeedPlanting(): the SECOND setup step — show the crop buttons + locked
+  // confirm button and ask the student to fill every plot.
+  function revealSeedPlanting() {
     seedShelf.object3D!.visible = true;
     for (const seedBag of seedBags) seedBag.object3D!.visible = true;
     instructionSign.object3D!.visible = true;
     updateConfirmVisibility(); // shows the locked progress button
-    // Kick the game off with a banner, a flourish, and the first objective.
     spawnBanner("🌱 Time to Plant!");
     sfxSeason();
-    setObjective("Plant a crop in every plot — fill all 16! 🌱");
+    setObjective(
+      "Plant a crop in every plot — fill all " + fieldPlots.length + "! 🌱",
+    );
+  }
+
+  // Now that the setup props exist, give the welcome tutorial a way to reveal
+  // them. finishWelcome() (up in the welcome-panel block) calls this when the
+  // student presses "Start Farming". It starts with the farm-size choice.
+  revealFarmSetup = () => {
+    showFarmSizeChoice();
   };
 
   // --------------------------------------------------------------------------
@@ -4732,6 +4970,18 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       if (bag.hasComponent(Pressed)) {
         if (bag.object3D!.visible) handleCropClick(bag.cropType);
         consumePress(bag);
+      }
+    }
+
+    // Farm-size cards: the first setup step. Act once per press while shown.
+    for (let i = 0; i < farmSizeCards.length; i++) {
+      const card = farmSizeCards[i];
+      if (card.hasComponent(Pressed)) {
+        if (card.object3D!.visible) {
+          sfxClick();
+          onFarmSizeChosen(card.sizeKey as FarmSizeKey);
+        }
+        consumePress(card);
       }
     }
 
@@ -5028,9 +5278,10 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     onSamuelNewsRead = null;
     clearQuiz();
     dismissSamuelBubble();
-    setObjective("Plant a crop in every plot — fill all 16! 🌱");
 
-    // a. Return every field plot to tilled soil and clear its crop + sprout.
+    // a. Return every field plot to tilled soil and clear its crop + sprout, so
+    //    last year's field looks clean while the student re-picks a farm size.
+    //    (Picking a size rebuilds the field, but this keeps it tidy meanwhile.)
     for (const plot of fieldPlots) {
       plot.cropType = null;
       ((plot.object3D as Mesh).material as MeshBasicMaterial).color.set(
@@ -5041,19 +5292,13 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         plot.sproutEntity = null;
       }
     }
-    // b. Bring the selection board + crop buttons (and the instruction sign) back
-    //    for setup. The buttons are fixed in place, so just re-show them.
-    seedShelf.object3D!.visible = true;
-    for (const bag of seedBags) {
-      bag.object3D!.visible = true; // shows the button AND its child label
-    }
-    instructionSign.object3D!.visible = true;
-    updateConfirmVisibility(); // back to its locked "0 / 16" state
-    // c. Hide this notice board and the reflection signs.
+    // b. Hide this notice board and the reflection signs.
     noticeBoard.object3D!.visible = false;
     for (const s of reflectionSigns) s.object3D!.visible = false;
-    // d. Run the existing reset logic (scores, decisions, fresh event, -> setup).
+    // c. Run the existing reset logic (scores, decisions, fresh event, -> setup).
     handlePlayAgain();
+    // d. Restart setup at the farm-size choice (which then reveals planting).
+    showFarmSizeChoice();
   }
 
   // Watch for clicks on the board's Play Again button. Fire ONCE on the rising
