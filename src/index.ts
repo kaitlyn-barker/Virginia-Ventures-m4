@@ -83,6 +83,12 @@ const CONSTANTS = {
   SCORE_MAX: 100,
   SCORE_MIN: 0,
 
+  // Revenue score (Phase 3.2): the Revenue meter is derived from actual coins,
+  // normalized per plot so every farm size can reach the top. This is the
+  // coins-per-plot that maps to a 100 Revenue score. (Tuning target for the
+  // Phase 3.3 rank-balancing harness.)
+  REVENUE_SCORE_COINS_PER_PLOT: 65,
+
   // Crop base prices (coins per unit)
   PRICE_TOBACCO: 8,
   PRICE_WHEAT: 4,
@@ -260,7 +266,10 @@ const TEXT_BLUE = "#1e5fa8"; // readable blue
 // Each one starts at its matching value from the CONSTANTS block above, and is
 // always kept inside the SCORE_MIN..SCORE_MAX range (0..100).
 // ============================================================================
-let scoreRevenue = CONSTANTS.FARM_REVENUE_START; // starts at 50
+// Revenue is DERIVED from actual coins (Phase 3.2), so it starts at 0 and climbs
+// as the student earns — see recomputeRevenueScore(). Health/Adaptability still
+// start at their neutral 50 and move via updateScore().
+let scoreRevenue = 0;
 let scoreCropHealth = CONSTANTS.CROP_HEALTH_START; // starts at 50
 let scoreAdaptability = CONSTANTS.MARKET_ADAPTABILITY_START; // starts at 50
 
@@ -318,6 +327,30 @@ function updateScore(meter: string, delta: number) {
 // Assigned inside the world setup: spawns the floating score popup, refreshes
 // the world-space scoreboard, and plays a sound. Null until the world exists.
 let onScoreChange: ((meter: string, delta: number) => void) | null = null;
+
+// ----------------------------------------------------------------------------
+// PROGRESS TRACKED FOR THE REPORT (Phase 3.1 / 3.4)
+// ----------------------------------------------------------------------------
+// How many of Samuel's up/down market predictions the student got right, and
+// out of how many. Surfaced on the report and in onSimulationComplete. Correct
+// predictions already grant +5 Adaptability inside the quiz; here we just count.
+let quizzesCorrect = 0;
+let quizzesTotal = 0;
+// The hold-vs-sell counterfactual line, filled in at the final harvest when the
+// student held their Season 1 crops (Phase 3.1). Shown on the report.
+let holdVsSellMsg = "";
+
+// recomputeRevenueScore(): the Revenue meter is DERIVED from actual coins
+// (Phase 3.2), not nudged by fixed amounts per decision. Coins are normalized
+// per plot (by farm size) so a small farm can reach the same score as a large
+// one. Call this whenever farmRevenue changes.
+function recomputeRevenueScore() {
+  const capacity =
+    farmSize().plotCap * CONSTANTS.REVENUE_SCORE_COINS_PER_PLOT;
+  const pct = capacity > 0 ? (farmRevenue / capacity) * 100 : 0;
+  scoreRevenue = clampScore(Math.round(pct));
+  refreshHUD();
+}
 
 // ============================================================================
 // SCORE HUD (heads-up display)
@@ -1335,7 +1368,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     const up = farmSize().upkeep;
     if (up <= 0) return;
     farmRevenue = Math.max(0, farmRevenue - up);
-    refreshHUD();
+    recomputeRevenueScore(); // upkeep lowers coins -> lowers the Revenue meter
     spawnScorePopup("-" + up + " 🪙 farm upkeep", "#b3402e");
     console.log(
       `[upkeep] ${seasonLabel}: -${up} coins (${farmSize().label}). Coins now ${farmRevenue}`,
@@ -1857,6 +1890,18 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // swing) for ALL crops, so later seasons' price signs stay continuous.
       // Seasons 2 and 3 then build on top of these prices instead of resetting.
       market.initSeason1(BASE_PRICE, BASE_YIELD);
+
+      // -- SUPPLY & DEMAND from the student's own planting mix (Phase 2.2) ----
+      // Other Virginia farmers follow the same trends, so a crop the student
+      // over-planted is oversupplied colony-wide (price falls) and one nobody
+      // grew is scarce (price rises). plantingRecord is one { cropType } per
+      // plot, keyed by crop id — exactly the shape applySupplyDemand wants.
+      const playerPlotsById: Record<string, number> = {};
+      for (const r of plantingRecord) {
+        playerPlotsById[r.cropType] = (playerPlotsById[r.cropType] || 0) + 1;
+      }
+      market.applySupplyDemand(playerPlotsById, (id) => cropDisplayName(id));
+
       // Unique crop ids the student planted, e.g. ["tobacco", "corn"].
       const uniqueCrops = [...new Set(plantingRecord.map((r) => r.cropType))];
 
@@ -1873,12 +1918,17 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // colored price text readable against the grass behind it).
       const post = makeBox(0.08, 1.4, 0.08, "#5b3a21", [signX, 0.7, signZ]);
       marketEntities.push(post);
+      // The board grows taller when there's a supply-and-demand note to show.
+      const s1HasNote = !!market.supplyHeadline;
+      const s1BoardH = s1HasNote ? 1.2 : 0.78;
+      const s1PlaneH = s1HasNote ? 1.1 : 0.7;
+      const s1SignY = s1HasNote ? 1.66 : 1.55;
       const signBoard = makeBox(
         1.04,
-        0.78,
+        s1BoardH,
         0.04,
         "#f7eed9",
-        [signX, 1.55, signZ + 0.02],
+        [signX, s1SignY, signZ + 0.02],
         true,
       );
       marketEntities.push(signBoard);
@@ -1898,14 +1948,29 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
           color,
         };
       });
+      // The supply-and-demand line (Phase 2.2), shown under the prices when the
+      // student's planting mix moved the market.
+      const s1Blocks: {
+        text: string;
+        bold?: boolean;
+        fontPx?: number;
+        color?: string;
+      }[] = [
+        { text: "🪙 Market Prices", bold: true, fontPx: 34, color: TEXT_GOLD },
+        ...priceLines,
+      ];
+      if (s1HasNote) {
+        s1Blocks.push({
+          text: market.supplyHeadline,
+          fontPx: 19,
+          color: "#6b4f2a",
+        });
+      }
       const signPanel = makeMarketTextPlane(
-        [
-          { text: "🪙 Market Prices", bold: true, fontPx: 34, color: TEXT_GOLD },
-          ...priceLines,
-        ],
+        s1Blocks,
         0.95,
-        0.7,
-        [signX, 1.55, signZ + 0.05],
+        s1PlaneH,
+        [signX, s1SignY, signZ + 0.05],
       );
       marketEntities.push(signPanel);
 
@@ -2037,11 +2102,11 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         earnings += (BASE_YIELD[crop] || 0) * (market.prices[crop] || 0);
       }
       farmRevenue += earnings; // add to the running farm revenue
+      recomputeRevenueScore(); // Revenue meter follows the actual coins (3.2)
       console.log(
         "Season 1 SELL: earned " + earnings + " coins. Revenue: " + farmRevenue,
       );
 
-      updateScore("revenue", 10); // reward for earning money
       season1Decision = "sell";
       hideMarketAndAdvance();
     }
@@ -2056,7 +2121,9 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         "Season 1 HOLD: keeping " + heldInventory.length + " plots for later.",
       );
 
-      updateScore("adaptability", 5); // reward for a flexible, wait-and-see move
+      // No score yet: holding is only rewarded (or not) at the FINAL harvest,
+      // when we compare what the held crops actually sold for against what
+      // selling in Season 1 would have earned (Phase 3.1, see finishHarvest).
       season1Decision = "hold";
       hideMarketAndAdvance();
     }
@@ -2598,12 +2665,16 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       // A thin vertical wooden post with a cream board behind the price text.
       const post = makeBox(0.08, 1.4, 0.08, "#5b3a21", [signX, 0.7, signZ]);
       s2WorldEntities.push(post);
+      const s2HasNote = !!market.supplyHeadline;
+      const s2BoardH = s2HasNote ? 1.24 : 0.78;
+      const s2PlaneH = s2HasNote ? 1.14 : 0.7;
+      const s2SignY = s2HasNote ? 1.68 : 1.55;
       const s2SignBoard = makeBox(
         1.04,
-        0.78,
+        s2BoardH,
         0.04,
         "#f7eed9",
-        [signX, 1.55, signZ + 0.02],
+        [signX, s2SignY, signZ + 0.02],
         true,
       );
       s2WorldEntities.push(s2SignBoard);
@@ -2625,34 +2696,51 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         const name = id.charAt(0).toUpperCase() + id.slice(1);
         return { text: name + ": " + price + " 🪙" + arrow, fontPx: 28, color };
       });
+      const s2Blocks: {
+        text: string;
+        bold?: boolean;
+        fontPx?: number;
+        color?: string;
+      }[] = [
+        { text: "🪙 Market Prices", bold: true, fontPx: 34, color: TEXT_GOLD },
+        ...s2PriceLines,
+      ];
+      if (s2HasNote) {
+        s2Blocks.push({
+          text: market.supplyHeadline,
+          fontPx: 19,
+          color: "#6b4f2a",
+        });
+      }
       const signPanel = makeS2TextPlane(
-        [
-          { text: "🪙 Market Prices", bold: true, fontPx: 34, color: TEXT_GOLD },
-          ...s2PriceLines,
-        ],
+        s2Blocks,
         0.95,
-        0.7,
-        [signX, 1.55, signZ + 0.05],
+        s2PlaneH,
+        [signX, s2SignY, signZ + 0.05],
       );
       s2WorldEntities.push(signPanel);
     }
 
     // ------------------------------------------------------------------------
-    // STRATEGY HELPERS — figure out whether the student planted the crop that
-    // benefited from this event (only the cotton surge helps a crop).
+    // OUTCOME-BASED SCORING HELPERS (Phase 3.1) — reward the student for a move
+    // that fits their real position, not for which button they tapped.
+    //   eventUpCrop()   = the crop whose PRICE ROSE (the market opportunity)
+    //   eventDownCrop() = the crop whose PRICE FELL (the crop to get out of)
+    //   cropShareById() = what fraction of the student's plots are that crop
     // ------------------------------------------------------------------------
-    function eventBeneficiaryCrop(): string | null {
-      // Event 1 (cotton surge) is the only event that RAISES a crop's value.
-      // Drought (0) and oversupply (2) only hurt a crop — nobody benefits.
-      if (season2Event === 1) return "cotton";
-      return null;
+    function eventUpCrop(): string | null {
+      if (season2Event === 0) return "corn"; // drought: scarce corn sells for more
+      if (season2Event === 1) return "cotton"; // surge: England wants cotton
+      return null; // tobacco oversupply has no winner
     }
-
-    function plantedBeneficiary(): boolean {
-      const benefit = eventBeneficiaryCrop();
-      if (!benefit) return false; // this event helped no one
-      // plantingRecord holds one { cropType } entry per planted plot.
-      return plantingRecord.some((r) => r.cropType === benefit);
+    function eventDownCrop(): string | null {
+      if (season2Event === 2) return "tobacco"; // oversupply crashes tobacco
+      return null; // drought / surge have no loser
+    }
+    function cropShareById(id: string | null): number {
+      if (!id || plantingRecord.length === 0) return 0;
+      const n = plantingRecord.filter((r) => r.cropType === id).length;
+      return n / plantingRecord.length;
     }
 
     // finishSeason2(decision): record the choice, hide the world props, and
@@ -2663,20 +2751,38 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       nextPhase();
     }
 
-    // The three card click handlers, one per strategy.
+    // The three card click handlers, scored by OUTCOME (Phase 3.1).
     function onShiftCrops() {
-      // Adapting your plan is the smart, flexible move.
-      updateScore("adaptability", 15);
+      // Shifting is SMART when the event gave a real reason to move: the student
+      // was heavily in the crop that crashed, or barely in the one that rose.
+      // Shifting when already well-placed is a needless move — small reward.
+      const downShare = cropShareById(eventDownCrop());
+      const upShare = cropShareById(eventUpCrop());
+      const neededToAdapt =
+        downShare >= 0.34 || (eventUpCrop() !== null && upShare < 0.2);
+      updateScore("adaptability", neededToAdapt ? 15 : 5);
       finishSeason2("shift");
     }
     function onDoubleDown() {
-      // Sticking with the plan only pays off if you grew the crop that benefited.
-      if (plantedBeneficiary()) updateScore("revenue", 10);
+      // Sticking is SMART when you hold a good hand (real stake in the rising
+      // crop) and STUBBORN when you cling to the crashing one. Revenue follows
+      // automatically at harvest via the actual coins (Phase 3.2).
+      const downShare = cropShareById(eventDownCrop());
+      const upShare = cropShareById(eventUpCrop());
+      if (downShare >= 0.34) {
+        updateScore("adaptability", -8); // clinging to the crop that's falling
+      } else if (upShare >= 0.34) {
+        updateScore("adaptability", 5); // riding a genuine winner
+      } else {
+        updateScore("adaptability", 2); // a fine, steady plan
+      }
       finishSeason2("doubledown");
     }
     function onDiversify() {
-      // Spreading effort across crops keeps the field healthier overall.
+      // Spreading effort across crops keeps the field healthier and is a sound
+      // hedge when the market is uncertain.
       updateScore("crophealth", 10);
+      updateScore("adaptability", 3);
       finishSeason2("diversify");
     }
 
@@ -3040,25 +3146,49 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
 
       // 2. If the student HELD their Season 1 crops instead of selling, sell that
       //    inventory now at this season's prices and add it to the harvest total.
+      //    We ALSO compute the counterfactual: what those same crops WOULD have
+      //    earned if sold back in Season 1, so we can tell the student whether
+      //    holding paid off (Phase 3.1). Season 1's prices live in the market
+      //    history's first snapshot; the units are the same either way, so only
+      //    the price differs.
       let heldSale = 0;
+      let wouldHaveEarnedS1 = 0;
+      holdVsSellMsg = "";
       if (season1Decision === "hold") {
-        // heldInventory is a copy of plantingRecord: one { cropType: <id> } entry
-        // per held plot. Sell each plot's yield at THIS season's price, both keyed
-        // by lowercase id. (Reading the old { crop, units, price } shape here is
-        // what produced NaN — those fields don't exist on these items.)
+        const s1Prices = market.history[0]?.prices || {};
         for (const item of heldInventory) {
           const id = item.cropType;
           const unitsPerPlot = market.yields[id] || 0;
-          const price = market.prices[id] || 0;
-          heldSale += unitsPerPlot * price;
+          heldSale += unitsPerPlot * (market.prices[id] || 0);
+          wouldHaveEarnedS1 += unitsPerPlot * (s1Prices[id] || 0);
         }
+        // Reward (or gently note) the timing, and craft the message that appears
+        // on the report. Never punish holding harshly — the lesson is the point.
+        const diff = heldSale - wouldHaveEarnedS1;
+        if (diff > 0) {
+          updateScore("adaptability", 10);
+          holdVsSellMsg =
+            "You held your crops. They sold for " +
+            diff +
+            " more coins than in Season 1 — patience paid off! (+10 Market Smarts)";
+        } else if (diff < 0) {
+          updateScore("adaptability", -4);
+          holdVsSellMsg =
+            "You held your crops, but prices fell — selling back in Season 1 would have earned " +
+            -diff +
+            " more coins. A tough break to learn from.";
+        } else {
+          holdVsSellMsg =
+            "You held your crops, and prices held steady — the timing came out even.";
+        }
+        console.log("[hold-vs-sell] " + holdVsSellMsg);
       }
 
-      // 3. Bank this final season's earnings into the running farm revenue,
-      //    and refresh the HUD/scoreboard so the coin total updates right away.
+      // 3. Bank this final season's earnings into the running farm revenue, and
+      //    recompute the coin-derived Revenue meter (Phase 3.2).
       const seasonEarnings = earnings + heldSale;
       farmRevenue += seasonEarnings;
-      refreshHUD();
+      recomputeRevenueScore();
       console.log(
         "Final harvest: " +
           seasonEarnings +
@@ -3196,12 +3326,16 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       const signZ = samuelStallPosition[2] + 0.9; // nudged toward the player
       const post = makeBox(0.08, 1.4, 0.08, "#5b3a21", [signX, 0.7, signZ]);
       s3WorldEntities.push(post);
+      const s3HasNote = !!market.supplyHeadline;
+      const s3BoardH = s3HasNote ? 1.24 : 0.78;
+      const s3PlaneH = s3HasNote ? 1.14 : 0.7;
+      const s3SignY = s3HasNote ? 1.68 : 1.55;
       const s3SignBoard = makeBox(
         1.04,
-        0.78,
+        s3BoardH,
         0.04,
         "#f7eed9",
-        [signX, 1.55, signZ + 0.02],
+        [signX, s3SignY, signZ + 0.02],
         true,
       );
       s3WorldEntities.push(s3SignBoard);
@@ -3221,14 +3355,27 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         const name = id.charAt(0).toUpperCase() + id.slice(1);
         return { text: name + ": " + price + " 🪙" + arrow, fontPx: 28, color };
       });
+      const s3Blocks: {
+        text: string;
+        bold?: boolean;
+        fontPx?: number;
+        color?: string;
+      }[] = [
+        { text: "🪙 Market Prices", bold: true, fontPx: 34, color: TEXT_GOLD },
+        ...s3PriceLines,
+      ];
+      if (s3HasNote) {
+        s3Blocks.push({
+          text: market.supplyHeadline,
+          fontPx: 19,
+          color: "#6b4f2a",
+        });
+      }
       const signPanel = makeS3TextPlane(
-        [
-          { text: "🪙 Market Prices", bold: true, fontPx: 34, color: TEXT_GOLD },
-          ...s3PriceLines,
-        ],
+        s3Blocks,
         0.95,
-        0.7,
-        [signX, 1.55, signZ + 0.05],
+        s3PlaneH,
+        [signX, s3SignY, signZ + 0.05],
       );
       s3WorldEntities.push(signPanel);
     }
@@ -3361,9 +3508,10 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       }
 
       // ----- The two final-decision actions ---------------------------------
-      // EXPAND: reuse the existing expand scoring exactly — hand out up to 3
-      // extra plots (up to this farm size's expand cap) and reward/punish by the
-      // price swing.
+      // EXPAND: hand out up to 3 extra plots (up to this farm size's expand cap).
+      // The extra plots pay off in real coins at harvest (Phase 3.2), so the
+      // "smart or not" signal now lands on ADAPTABILITY: expanding into a rising
+      // market reads it right; expanding into a falling one misreads it.
       function onExpandCard() {
         season3Decision = "expand";
 
@@ -3377,11 +3525,12 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
             plotsToAdd--;
           }
         }
-        // Reward expanding when prices are up; penalize it when prices dropped.
+        // Expanding into rising prices is a shrewd read; into falling prices, a
+        // misread. (The coins themselves flow through the Revenue meter.)
         if (SEASON3_EVENTS[season3Event].priceDelta > 0) {
-          updateScore("revenue", 10); // good year to grow more
+          updateScore("adaptability", 8); // grew more just as prices rose
         } else {
-          updateScore("revenue", -5); // expanding into falling prices stings
+          updateScore("adaptability", -5); // grew into a falling market
         }
 
         hideS3Corkboard();
@@ -3855,8 +4004,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   // every per-game decision, and rolls a fresh Season 2 market event.
   // --------------------------------------------------------------------------
   function handlePlayAgain() {
-    // Scores back to their CONSTANTS starting values.
-    scoreRevenue = CONSTANTS.FARM_REVENUE_START;
+    // Health/Adaptability back to their neutral starting values. Revenue is
+    // coin-derived (Phase 3.2), so it resets to 0 with the coins below.
     scoreCropHealth = CONSTANTS.CROP_HEALTH_START;
     scoreAdaptability = CONSTANTS.MARKET_ADAPTABILITY_START;
 
@@ -3872,9 +4021,15 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     season3Decision = null;
     farmRevenue = 0;
     heldInventory = [];
+    // Reset the report trackers (Phase 3.1 / 3.4).
+    quizzesCorrect = 0;
+    quizzesTotal = 0;
+    holdVsSellMsg = "";
 
-    // Refresh the HUD/scoreboard AFTER everything above is zeroed — refreshing
-    // first left last year's coin total ("Coins earned: 904") on screen.
+    // Recompute the coin-derived Revenue meter (now 0) and push the fresh
+    // numbers to the HUD/scoreboard. Doing this AFTER zeroing everything avoids
+    // leaving last year's coin total ("Coins earned: 904") on screen.
+    recomputeRevenueScore();
     refreshHUD();
 
     // Roll a fresh random Season 2 market event for the new game (0, 1, or 2)
@@ -3988,6 +4143,12 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       scoreCropHealth: scoreCropHealth,
       scoreAdaptability: scoreAdaptability,
       playStyleRank: currentRank,
+      // Phase 3.2 / 3.4: real coins, the chosen farm size, and how many of
+      // Samuel's market predictions the student got right.
+      coins: farmRevenue,
+      farmSize: farmSizeKey,
+      marketPredictionsCorrect: quizzesCorrect,
+      marketPredictionsTotal: quizzesTotal,
     };
     console.log("[EVENT] onSimulationComplete", completionDetail);
     window.dispatchEvent(
@@ -4483,7 +4644,10 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // What a click on either card does.
     quizOnAnswer = (answeredUp: boolean) => {
       const correct = answeredUp === opts.correctIsUp;
+      // Track predictions for the report + completion event (Phase 3.4).
+      quizzesTotal++;
       if (correct) {
+        quizzesCorrect++;
         updateScore("adaptability", 5); // Market Smarts reward (+ coin sound)
       } else {
         sfxDown(); // a gentle "not quite" — no points lost
@@ -5113,6 +5277,12 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   const nbRecap1 = boardText(0.33, 3.2, 0.07, "", { fontPx: 22, color: "#1F3A5F" });
   const nbRecap2 = boardText(0.26, 3.2, 0.07, "", { fontPx: 22, color: "#1F3A5F" });
   const nbRecap3 = boardText(0.19, 3.2, 0.07, "", { fontPx: 22, color: "#1F3A5F" });
+  // Market-prediction tally (Phase 3.4), filled in on enter.
+  const nbQuizLine = boardText(0.125, 3.2, 0.055, "", {
+    fontPx: 22,
+    color: TEXT_GREEN,
+    bold: true,
+  });
 
   // Play Again button: a gold rectangle with a navy label, made clickable with
   // RayInteractable (the same mechanic as every other 3D button in this file).
@@ -5208,6 +5378,13 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     nbRecap1.setText(s1);
     nbRecap2.setText(s2);
     nbRecap3.setText(s3);
+    // Market-prediction tally (Phase 3.4). Only shown once at least one of
+    // Samuel's questions was answered.
+    nbQuizLine.setText(
+      quizzesTotal > 0
+        ? "🧠 Market Predictions: " + quizzesCorrect + " of " + quizzesTotal + " correct"
+        : "",
+    );
 
     // b. Reveal the board and the reflection signs.
     noticeBoard.object3D!.visible = true;
@@ -5236,10 +5413,13 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
             clearInterval(nbRiseTimer);
             nbRiseTimer = null;
           }
-          // Once the board is fully up: confetti + fanfare, and Samuel says
-          // his rank-appropriate line.
+          // Once the board is fully up: confetti + fanfare, and Samuel speaks.
+          // If the student HELD their Season 1 crops, Samuel delivers the
+          // hold-vs-sell verdict (Phase 3.1) — the payoff of their big gamble,
+          // which appears right here at the final harvest. Otherwise he gives
+          // his rank-appropriate line. (The rank is always shown on the board.)
           if (fireReportCelebration) fireReportCelebration();
-          samuelSpeak(rankFinalLine(currentRank));
+          samuelSpeak(holdVsSellMsg || rankFinalLine(currentRank));
         }
       }, tickMs);
     }

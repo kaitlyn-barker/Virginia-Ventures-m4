@@ -42,6 +42,11 @@ class Market {
   // One entry per season, so the full price series per crop is inspectable.
   history: PriceSnapshot[] = [];
 
+  // A one-line, student-facing explanation of the biggest supply-and-demand
+  // effect the student's own planting mix caused this year (Phase 2.2). Empty
+  // when the mix was balanced enough that nothing moved. Shown on the price sign.
+  supplyHeadline = "";
+
   // initSeason1(): remember the base tables, then roll each crop's starting
   // price as base ± a small (-2..+2) random swing. Yields start at base. This
   // runs for EVERY crop in the base tables (not just the ones the student
@@ -56,6 +61,60 @@ class Market {
       this.prices[id] = Math.max(1, basePrices[id] + swing);
     }
     this.record("Season 1");
+  }
+
+  // applySupplyDemand(playerPlots, nameOf): the student's OWN planting mix moves
+  // the market (Phase 2.2). Other Virginia farmers follow the same trends, so a
+  // crop the student over-planted is oversupplied colony-wide and its price
+  // falls; a crop nobody grew is scarce and its price rises. Magnitudes are kept
+  // small (±1..2) so the scripted Season 2/3 events remain the dominant story.
+  // Runs once, right after initSeason1, and folds into the Season 1 price the
+  // student actually sees and sells at (so history[0] stays truthful).
+  //   playerPlots: crop id -> plots the student planted
+  //   nameOf:      crop id -> friendly display name (for the explanation line)
+  applySupplyDemand(
+    playerPlots: CropTable,
+    nameOf: (id: string) => string,
+  ): void {
+    let total = 0;
+    for (const id in playerPlots) total += playerPlots[id] || 0;
+    if (total < 1) total = 1; // avoid divide-by-zero if nothing was planted
+
+    this.supplyHeadline = "";
+    let biggestDelta = 0; // remember the largest swing for the headline
+    for (const id in this.prices) {
+      const share = (playerPlots[id] || 0) / total;
+      let delta = 0;
+      let why = "";
+      if (share >= 0.5) {
+        delta = -2; // more than half the farm -> heavy oversupply
+        why = `Many farmers grew ${nameOf(id)} this year — supply is high, so its price fell.`;
+      } else if (share >= 0.34) {
+        delta = -1; // a big share -> mild oversupply
+        why = `A lot of ${nameOf(id)} was grown this year — supply is up, so its price dipped.`;
+      } else if (share === 0) {
+        delta = 1; // nobody grew it -> scarce
+        why = `Hardly anyone grew ${nameOf(id)} — it's scarce, so its price rose.`;
+      }
+      if (delta !== 0) {
+        this.prices[id] = Math.max(1, this.prices[id] + delta);
+        // Keep the biggest single effect as the sign's one-line explanation,
+        // preferring price DROPS (the core "if everyone grows it, price falls").
+        if (Math.abs(delta) > Math.abs(biggestDelta) || (delta < 0 && biggestDelta > 0)) {
+          biggestDelta = delta;
+          this.supplyHeadline = why;
+        }
+      }
+    }
+    this.clampFloor();
+    // Fold the supply effect into the Season 1 snapshot so history[0] reflects
+    // the price the student truly sold/held at (used later for hold-vs-sell).
+    if (this.history.length) {
+      this.history[this.history.length - 1].prices = { ...this.prices };
+    }
+    console.log(
+      `[market] supply/demand from planting mix: ${JSON.stringify(this.prices)} | ${this.supplyHeadline || "(balanced mix, no swing)"}`,
+    );
   }
 
   // applySeason2Event(): CONTINUE from the Season 1 prices (do NOT reset to
@@ -99,6 +158,7 @@ class Market {
     this.prices = {};
     this.yields = {};
     this.history = [];
+    this.supplyHeadline = "";
   }
 
   // No crop is ever worth less than 1 coin.
