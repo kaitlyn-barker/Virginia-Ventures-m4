@@ -5657,34 +5657,6 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   nbBtnLabel.entity.object3D!.position.set(0, 0.06, 0.08); // sit in front of the gold box
 
   // --------------------------------------------------------------------------
-  // REFLECTION SIGNS — three small cream boards on the fence line, each showing
-  // one reflection question. They are shown only during the report phase.
-  // --------------------------------------------------------------------------
-  const REFLECTION_QUESTIONS = [
-    "🤔 When prices suddenly changed, what did you do? Would you do it differently?",
-    "🌽 Which crop was your best pick this year? Why did it work — or not?",
-    "🪙 How is choosing what to plant like the money choices people make today?",
-  ];
-  // Three of the fence-post x positions (the fence posts sit at x = -1.8..1.8).
-  const reflectionSignXs = [-1.8, 0, 1.8];
-  const reflectionSigns: any[] = [];
-  for (let i = 0; i < REFLECTION_QUESTIONS.length; i++) {
-    const sx = reflectionSignXs[i];
-    // A small cream board lifted to ~1.35 m (just above the fence posts).
-    const sign = makeBox(0.9, 0.7, 0.05, "#f3e9d2", [sx, 1.35, fenceZ], true);
-    const q = makeSamuelTextPlane(0.86, 0.66, {
-      fontPx: 22,
-      color: "#1F3A5F",
-      bold: true,
-      parent: sign,
-    });
-    q.entity.object3D!.position.set(0, 0, 0.04); // just in front of the board face
-    q.setText(REFLECTION_QUESTIONS[i]);
-    sign.object3D!.visible = false; // hidden until the report phase
-    reflectionSigns.push(sign);
-  }
-
-  // --------------------------------------------------------------------------
   // rankFinalLine(): Samuel's closing line, chosen to match the earned rank.
   // --------------------------------------------------------------------------
   function rankFinalLine(name: string): string {
@@ -5740,9 +5712,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         : "",
     );
 
-    // b. Reveal the board and the reflection signs.
+    // b. Reveal the report board.
     noticeBoard.object3D!.visible = true;
-    for (const s of reflectionSigns) s.object3D!.visible = true;
 
     // c. Reset the bars to empty and the board to below ground.
     nbRevBar.fillE.object3D!.scale.x = 0;
@@ -5826,9 +5797,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
         plot.sproutEntity = null;
       }
     }
-    // b. Hide this notice board and the reflection signs.
+    // b. Hide this notice board.
     noticeBoard.object3D!.visible = false;
-    for (const s of reflectionSigns) s.object3D!.visible = false;
     // c. Run the existing reset logic (scores, decisions, fresh event, -> setup).
     handlePlayAgain();
     // d. Restart setup at the farm-size choice (which then reveals planting).
