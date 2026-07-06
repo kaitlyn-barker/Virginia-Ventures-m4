@@ -39,6 +39,7 @@ import {
   Pressed, // transient tag the InputSystem adds while a ray is clicking an entity
   // Floor that the player can stand/walk on
   LocomotionEnvironment,
+  LocomotionSystem, // lets us tune slide speed at runtime (slower in-headset)
   EnvironmentType,
   VisibilityState, // tells us browser (non-immersive) vs in-headset (XR) mode
 } from "@iwsdk/core";
@@ -1221,6 +1222,27 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   },
 }).then((world) => {
   const { scene, camera } = world;
+
+  // --------------------------------------------------------------------------
+  // COMFORT: SLOWER SLIDE SPEED IN THE HEADSET
+  // --------------------------------------------------------------------------
+  // The locomotion system's default slide speed is 5 m/s — a flat-out run.
+  // That's fine for WASD on a flat screen, but inside a headset that much
+  // artificial motion is a classic motion-sickness trigger (especially for
+  // young, first-time VR users). slidingSpeed isn't exposed through the
+  // World.create feature options, so we set it on the live system instead: a
+  // gentle walk in immersive mode, the snappy default in the browser. The
+  // config value is reactive, so changing it takes effect immediately.
+  const SLIDE_SPEED_XR = 2.5; // m/s in-headset: brisk-walk pace, easy on the stomach
+  const SLIDE_SPEED_BROWSER = 5; // m/s in the browser: the framework default
+  const locomotionSystem = world.getSystem(LocomotionSystem);
+  world.visibilityState.subscribe((state) => {
+    if (!locomotionSystem) return;
+    locomotionSystem.config.slidingSpeed.value =
+      state === VisibilityState.NonImmersive
+        ? SLIDE_SPEED_BROWSER
+        : SLIDE_SPEED_XR;
+  });
 
   // --------------------------------------------------------------------------
   // Camera: stand the viewer a little back and at roughly eye height so the
