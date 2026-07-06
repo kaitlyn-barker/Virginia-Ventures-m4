@@ -26,6 +26,7 @@ import {
   SphereGeometry, // a ball shape; used for Samuel's head
   Vector3, // a 3D point in space; used to measure how far the player is from Samuel
   Quaternion, // an orientation; used to head-lock the in-headset mini HUD
+  Euler, // pitch/yaw angles; tilts the mini HUD toward the eye from its corner spot
   CanvasTexture, // wraps an HTML <canvas> so we can draw text and use it as a texture
   DoubleSide, // makes a flat plane visible from both front and back
   SRGBColorSpace, // keeps canvas-drawn colors looking correct in the 3D scene
@@ -5972,7 +5973,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   // world scoreboard sits at a fixed spot the student has to walk over to. So we
   // mirror the three things they need at a glance — season, coins, and the
   // CURRENT objective ("what do I do next?") — onto a small panel that is
-  // head-locked at a low, comfortable offset and shown ONLY in immersive mode.
+  // head-locked in the LOWER-LEFT periphery (out of the center of the view, but
+  // readable with a quick glance down) and shown ONLY in immersive mode.
   const xrHudCanvas = document.createElement("canvas");
   xrHudCanvas.width = 512;
   xrHudCanvas.height = 240;
@@ -6035,13 +6037,18 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   }
   drawXrHud();
 
-  // Head-lock: every frame, place the panel a fixed offset in front of and
-  // slightly below the camera, angled to face the viewer. Temps are allocated
-  // once here (never inside the loop) so there is no per-frame garbage.
+  // Head-lock: every frame, place the panel a fixed offset in front of, below,
+  // and to the LEFT of the camera — the lower-left corner of the view, so it
+  // never blocks what the student is looking at — and tilt it toward the eye so
+  // it stays readable from that off-center spot. Temps are allocated once here
+  // (never inside the loop) so there is no per-frame garbage.
   const xrHudTmpPos = new Vector3();
   const xrHudTmpQuat = new Quaternion();
   const xrHudScratch = new Vector3();
-  const xrHudOffset = new Vector3(0, -0.26, -0.8); // head space: down + forward
+  const xrHudOffset = new Vector3(-0.34, -0.32, -0.85); // head space: left + down + forward
+  // Pitch up and yaw right by the offset's own angles (atan(0.32/0.85) and
+  // atan(0.34/0.85)) so the panel's face points back at the eye, not past it.
+  const xrHudTilt = new Quaternion().setFromEuler(new Euler(-0.36, 0.38, 0));
   let xrHudWasImmersive = false;
   function positionXrHud() {
     const immersive =
@@ -6056,7 +6063,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       camera.getWorldQuaternion(xrHudTmpQuat);
       xrHudScratch.copy(xrHudOffset).applyQuaternion(xrHudTmpQuat);
       xrHudMesh.position.copy(xrHudTmpPos).add(xrHudScratch);
-      xrHudMesh.quaternion.copy(xrHudTmpQuat); // face the same way as the head
+      // Head orientation plus the fixed corner tilt = always facing the eye.
+      xrHudMesh.quaternion.copy(xrHudTmpQuat).multiply(xrHudTilt);
     }
     requestAnimationFrame(positionXrHud);
   }
